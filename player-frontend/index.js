@@ -2951,6 +2951,8 @@ function scheduleControlsHide(delay) {
 
 // 显示底部控制条，并按自动隐藏设置安排隐藏。
 function revealBottomControls(delay) {
+  // 全沉浸模式下底部控制条保持完全隐藏。
+  if (immersiveMode) return;
   var bar = document.getElementById('bottom-bar');
   // 歌单架抑制期间不显示底部控制条。
   if (isBottomControlsSuppressedForShelf()) return;
@@ -15585,20 +15587,22 @@ function setImmersiveMode(on) {
     };
     immersiveMode = true;
     document.body.classList.add('immersive-mode');
-    // 进入时确保底部控制条短暂可见。
+    // 进入沉浸时底部控制条直接不可见，不再短暂显示迷你状态。
+    controlsHovering = false;
+    if (controlsHideTimer) { clearTimeout(controlsHideTimer); controlsHideTimer = null; }
     var bottomBarEnter = document.getElementById('bottom-bar');
-    if (bottomBarEnter) bottomBarEnter.classList.add('visible');
+    if (bottomBarEnter) bottomBarEnter.classList.remove('visible', 'soft-hidden');
     closeImmersiveInterference();
+    // 沉浸模式下收起 3D 歌单架与左侧队列，退出时由保存状态恢复。
+    setShelfPinnedOpen(false, true);
+    applyShelfModeRuntime('off');
+    togglePlaylistPanel(false);
     if (!fx.particleLyrics) setParticleLyricsSilently(true);
     controlsAutoHide = true;
     syncControlsAutoHideButton();
     updateImmersiveButton();
     syncCursorAutoHideMode();
-    revealBottomControls(720);
-    setTimeout(function(){
-      // 一段时间后自动隐藏底部控制条。
-      if (immersiveMode && !controlsHovering) setControlsHidden(true);
-    }, 980);
+    updateControlsChromeState();
     return;
   }
 
