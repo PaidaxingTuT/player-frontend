@@ -53,6 +53,14 @@ var playlistCoverCache = {};
 // 宿主桥接消息来源标识。
 var ECHO_BRIDGE_CHILD_SOURCE = 'echo-player-frontend-child';
 var ECHO_BRIDGE_PARENT_SOURCE = 'echo-player-frontend-parent';
+// 壁纸运行模式只由外部 17196 页面启用，主程序内覆盖层不使用这个锁定状态。
+var wallpaperRuntimeMode = (function(){
+  try {
+    return new URLSearchParams(location.search || '').get('wallpaper') === '1';
+  } catch (e) {
+    return /(?:^|[?&])wallpaper=1(?:&|$)/.test(location.search || '');
+  }
+})();
 // 插件数据库键名。
 var EPF_STATE_STORE_KEY = 'state:v1';
 var EPF_USER_FX_ARCHIVE_STORE_KEY = 'user-fx-archives:v1';
@@ -15450,22 +15458,47 @@ function setAIDepthCloudApi(value) {
 }
 
 // 应用 3D 歌单架运行态模式，不负责持久化。
+function enforceWallpaperShelfHidden() {
+  if (!wallpaperRuntimeMode) return false;
+  if (shelfManager && shelfManager.hasOpenContent && shelfManager.hasOpenContent()) {
+    safeShelfCloseContent('wallpaper-lock');
+  }
+  shelfPinnedOpen = false;
+  shelfVisibility = 0;
+  shelfHoverCue.target = 0;
+  shelfHoverCue.value = 0;
+  shelfHoverCue.zoneActive = false;
+  shelfHoverCue.enteredAt = 0;
+  if (typeof setShelfHoverTabVisible === 'function') setShelfHoverTabVisible(false);
+  if (shelfManager && shelfManager.clearSelected) shelfManager.clearSelected();
+  if (shelfManager && shelfManager.setMode) shelfManager.setMode('off');
+  var bottomBar = document.getElementById('bottom-bar');
+  if (bottomBar) bottomBar.classList.remove('stage-mode');
+  var hint = document.getElementById('hint');
+  if (hint) hint.classList.remove('shelf-hidden');
+  if (typeof setFocusZone === 'function') setFocusZone(null, true);
+  return true;
+}
+
 function applyShelfModeRuntime(m) {
   // 归一化目标模式。
   m = /^(off|side|stage)$/.test(String(m || '')) ? m : fxDefaults.shelf;
-  fx.shelf = m;
-  document.querySelectorAll('#shelf-seg button').forEach(function(b){ b.classList.toggle('active', b.dataset.shelf === m); });
-  if (shelfManager) shelfManager.setMode(m);
+  // 壁纸模式只锁运行态，不覆盖用户保存的歌单架配置。
+  var runtimeMode = wallpaperRuntimeMode ? 'off' : m;
+  if (!wallpaperRuntimeMode || !/^(off|side|stage)$/.test(String(fx.shelf || ''))) fx.shelf = m;
+  document.querySelectorAll('#shelf-seg button').forEach(function(b){ b.classList.toggle('active', b.dataset.shelf === runtimeMode); });
+  if (shelfManager) shelfManager.setMode(runtimeMode);
   // 舞台模式: 底部控件让位
   // 底部控制条节点。
   var bottomBar = document.getElementById('bottom-bar');
-  if (bottomBar) bottomBar.classList.toggle('stage-mode', m === 'stage');
-  return m;
+  if (bottomBar) bottomBar.classList.toggle('stage-mode', runtimeMode === 'stage');
+  if (wallpaperRuntimeMode) enforceWallpaperShelfHidden();
+  return runtimeMode;
 }
 // 设置 3D 歌单架模式。
 function setShelfMode(m) {
   applyShelfModeRuntime(m);
-  saveLyricLayout();
+  if (!wallpaperRuntimeMode) saveLyricLayout();
 }
 
 // 刷新歌单架控制相关 UI。
@@ -15492,6 +15525,10 @@ function updateShelfControlUi() {
 // 刷新歌单架视觉状态。
 function refreshShelfVisuals(reason) {
   updateShelfControlUi();
+  if (wallpaperRuntimeMode) {
+    enforceWallpaperShelfHidden();
+    return;
+  }
   if (shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
   if (shelfManager && shelfManager.rebuild && reason === 'mode') shelfManager.rebuild(true);
 }
@@ -15501,6 +15538,10 @@ function setShelfCameraMode(mode) {
   applyShelfCameraDefaultAngle(true);
   setRange('fx-shelfangle', fx.shelfAngleY);
   updateShelfControlUi();
+  if (wallpaperRuntimeMode) {
+    enforceWallpaperShelfHidden();
+    return;
+  }
   if (fx.shelfCameraMode === 'static' && orbit && orbit.focus && /^shelf-/.test(String(orbit.focus.type || ''))) {
     setFocusZone(null, true);
   }
@@ -15511,7 +15552,11 @@ function setShelfCameraMode(mode) {
 function setShelfPresence(mode) {
   fx.shelfPresence = normalizeShelfPresence(mode);
   updateShelfControlUi();
-  if (shelfManager && shelfManager.setMode) shelfManager.setMode(fx.shelf);
+  if (wallpaperRuntimeMode) {
+    enforceWallpaperShelfHidden();
+    return;
+  }
+  applyShelfModeRuntime(fx.shelf);
   if (fx.shelfPresence === 'auto' && !shelfPinnedOpen) {
     shelfHoverCue.target = 0;
   }
@@ -15571,9 +15616,30 @@ function closeImmersiveInterference() {
   setFocusZone(null, true);
 }
 
+// 壁纸模式必须固定在全沉浸式，不允许通过快捷键或桥接命令退出。
+function forceWallpaperImmersiveLock() {
+  if (!wallpaperRuntimeMode) return;
+  document.body.classList.add('wallpaper-runtime-mode');
+  if (!immersiveMode) {
+    immersiveMode = true;
+    document.body.classList.add('immersive-mode');
+  }
+  closeImmersiveInterference();
+  enforceWallpaperShelfHidden();
+  controlsAutoHide = true;
+  syncControlsAutoHideButton();
+  updateImmersiveButton();
+  syncCursorAutoHideMode();
+  updateControlsChromeState();
+}
+
 // 设置全沉浸模式开关。
 function setImmersiveMode(on) {
   on = !!on;
+  if (!on && wallpaperRuntimeMode) {
+    forceWallpaperImmersiveLock();
+    return;
+  }
   if (immersiveMode === on) return;
 
   if (on) {
@@ -15626,6 +15692,10 @@ function setImmersiveMode(on) {
 
 // 切换全沉浸模式。
 function toggleImmersiveMode() {
+  if (wallpaperRuntimeMode) {
+    forceWallpaperImmersiveLock();
+    return;
+  }
   setImmersiveMode(!immersiveMode);
 }
 
@@ -16484,6 +16554,11 @@ document.addEventListener('keydown', function(e){
   else if (e.code === 'ArrowRight') nextTrack();
   else if (e.code === 'ArrowLeft')  prevTrack();
   else if (e.code === 'Escape')     {
+    if (wallpaperRuntimeMode) {
+      e.preventDefault();
+      forceWallpaperImmersiveLock();
+      return;
+    }
     if (immersiveMode) {
       e.preventDefault();
       setImmersiveMode(false);
@@ -17227,6 +17302,10 @@ function applyShelfRuntimeState() {
   fx.shelfPresence = normalizeShelfPresence(fx.shelfPresence || fxDefaults.shelfPresence);
   applyShelfModeRuntime(fx.shelf);
   updateShelfControlUi();
+  if (wallpaperRuntimeMode) {
+    enforceWallpaperShelfHidden();
+    return;
+  }
   if (fx.shelfCameraMode === 'static' && orbit && orbit.focus && /^shelf-/.test(String(orbit.focus.type || ''))) {
     setFocusZone(null, true);
   }
@@ -17350,6 +17429,10 @@ async function loadHostPersistentStorage() {
   // 发送宿主播放器控制命令。
   function command(name, payload) {
     // 所有控制命令都收敛成统一协议，宿主侧再映射到真实播放器 API。
+    if (wallpaperRuntimeMode && (name === 'close' || name === 'mini-player' || name === 'window-control')) {
+      forceWallpaperImmersiveLock();
+      return;
+    }
     post('echo-player-frontend:command', Object.assign({ command: name }, payload || {}));
   }
   // 暴露调试命令入口，便于宿主或控制台直接发送桥接命令。
@@ -17562,6 +17645,7 @@ async function loadHostPersistentStorage() {
 
   // 安装左上角返回按钮。
   function installCloseButton() {
+    if (wallpaperRuntimeMode) return;
     if (document.getElementById('echo-bridge-close')) return;
     // 返回按钮节点。
     var button = document.createElement('button');
@@ -17618,6 +17702,7 @@ async function loadHostPersistentStorage() {
     // 旧按钮组需要先移除，避免宿主能力变更后残留按钮。
     var existing = document.getElementById('echo-bridge-window-controls');
     if (existing) existing.remove();
+    if (wallpaperRuntimeMode) return;
 
     // macOS 使用宿主原生红绿灯按钮，子页面不再绘制右侧窗口按钮。
     var isMac = String(bridgeHostControls.platform || '').toLowerCase() === 'darwin';
@@ -17688,6 +17773,7 @@ async function loadHostPersistentStorage() {
     if (bottom) bottom.classList.add('visible');
     setControlsHidden(false);
     forcePlaybackControlsInteractive();
+    if (wallpaperRuntimeMode) setImmersiveMode(true);
   }
 
   // 请求刷新 Three.js 主渲染视口。
@@ -18193,6 +18279,10 @@ async function loadHostPersistentStorage() {
       // 阻止旧播放器或浏览器默认处理 Esc。
       e.preventDefault();
       e.stopPropagation();
+      if (wallpaperRuntimeMode) {
+        forceWallpaperImmersiveLock();
+        return;
+      }
       command('close');
     }
   }, true);
@@ -18206,10 +18296,13 @@ async function loadHostPersistentStorage() {
     if (data.type === 'echo-player-frontend:init') {
       // 初始化消息包含插件版本和宿主窗口控制能力。
       var initPayload = data.payload || {};
+      if (initPayload.wallpaperMode) wallpaperRuntimeMode = true;
+      document.body.classList.toggle('wallpaper-runtime-mode', !!wallpaperRuntimeMode);
       playerFrontendVersion = String(initPayload.pluginVersion || '').trim();
       bridgeHostControls = Object.assign(bridgeHostControls, initPayload.hostControls || {});
       applyAppearancePayload(initPayload.appearance);
       forcePlayerSurface();
+      if (wallpaperRuntimeMode) setImmersiveMode(true);
       refreshBridgeViewport('echo-bridge-init');
       installWindowControls();
       loadHostPersistentStorage().catch(function(err){ console.warn('[存储] 初始化失败', err); });

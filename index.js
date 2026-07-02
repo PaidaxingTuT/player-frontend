@@ -4,6 +4,10 @@
 // 3. 在宿主播放器状态、歌词、频谱数据和 iframe 页面之间转发消息。
 const LEGACY_PAGE_PATH = '/main/plugin/player-frontend/player'
 const FALLBACK_PATH = '/main/home'
+const WALLPAPER_WEB_PORT = 17196
+const WALLPAPER_WEB_HOST = '127.0.0.1'
+const WALLPAPER_MEDIA_CHUNK_BYTES = 2 * 1024 * 1024
+const WALLPAPER_STATIC_MAX_BYTES = 4 * 1024 * 1024
 const SQLITE_BUSY_TIMEOUT_MS = 5000
 const SQLITE_DEPTH_KEY_PREFIX = 'depth:v1:'
 const SQLITE_MIGRATIONS = [
@@ -30,6 +34,38 @@ const SQLITE_MIGRATIONS = [
 
 // 宿主播放器的播放模式顺序，用于 iframe 请求“切换模式”时循环到下一项。
 const playModeOrder = ['sequential', 'list', 'random', 'single']
+
+const WALLPAPER_TEXT_MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+}
+
+const WALLPAPER_BINARY_MIME_TYPES = {
+  '.bin': 'application/octet-stream',
+  '.wasm': 'application/wasm',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+}
+
+const WALLPAPER_MEDIA_MIME_BY_EXT = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+}
 
 // SQLite 句柄可能被宿主或其他运行时关闭，这里统一识别可重试的错误。
 function isSqliteHandleClosedError(error) {
@@ -363,6 +399,700 @@ function normalizeLyricLine(ctx, line, index, lines) {
     characters: lyricCharacters(line),
     duration_ms: nextStartMs > startMs ? Math.max(400, nextStartMs - startMs) : 4800,
   }
+}
+
+function firstHeaderValue(headers, name) {
+  const lowerName = String(name || '').toLowerCase()
+  const entry = Object.entries(headers || {}).find(([key]) => key.toLowerCase() === lowerName)
+  if (!entry) return ''
+  const value = entry[1]
+  return Array.isArray(value) ? String(value[0] || '') : String(value || '')
+}
+
+function arrayBufferToText(buffer) {
+  const source = buffer instanceof ArrayBuffer ? buffer : new ArrayBuffer(0)
+  try {
+    return new TextDecoder('utf-8').decode(source)
+  } catch {
+    const bytes = new Uint8Array(source)
+    let textValue = ''
+    for (const byte of bytes) textValue += String.fromCharCode(byte)
+    return decodeURIComponent(escape(textValue))
+  }
+}
+
+function requestJson(request) {
+  const textValue = arrayBufferToText(request?.body)
+  if (!textValue.trim()) return {}
+  return JSON.parse(textValue)
+}
+
+function jsonResponse(body, status = 200, headers = {}) {
+  return {
+    status,
+    headers: {
+      'cache-control': 'no-store',
+      ...headers,
+    },
+    body,
+  }
+}
+
+function textResponse(body, status = 200, contentType = 'text/plain; charset=utf-8') {
+  return {
+    status,
+    headers: {
+      'content-type': contentType,
+      'cache-control': 'no-store',
+    },
+    body,
+  }
+}
+
+function binaryResponse(body, contentType, headers = {}, status = 200) {
+  return {
+    status,
+    headers: {
+      'content-type': contentType || 'application/octet-stream',
+      'cache-control': 'public, max-age=300',
+      ...headers,
+    },
+    body,
+  }
+}
+
+function extensionOf(path) {
+  const name = String(path || '').split(/[\\/]/).pop() || ''
+  const index = name.lastIndexOf('.')
+  return index >= 0 ? name.slice(index).toLowerCase() : ''
+}
+
+function safeDecodePath(path) {
+  try {
+    return decodeURIComponent(String(path || ''))
+  } catch {
+    return String(path || '')
+  }
+}
+
+function normalizeWallpaperStaticPath(requestPath) {
+  const decoded = safeDecodePath(requestPath).replace(/\\/g, '/')
+  let relativePath = decoded.replace(/^\/+/, '')
+  if (relativePath === 'wallpaper-bridge.js') {
+    relativePath = 'player-frontend/wallpaper-bridge.js'
+  }
+  if (!relativePath.startsWith('player-frontend/')) return ''
+  const parts = relativePath.split('/').filter(Boolean)
+  if (!parts.length) return ''
+  if (parts.some((part) => part === '.' || part === '..' || part.includes('\0'))) return ''
+  return parts.join('/')
+}
+
+function contentTypeForPath(path) {
+  const extension = extensionOf(path)
+  return (
+    WALLPAPER_TEXT_MIME_TYPES[extension] ||
+    WALLPAPER_BINARY_MIME_TYPES[extension] ||
+    'application/octet-stream'
+  )
+}
+
+function isTextAsset(path) {
+  return Object.prototype.hasOwnProperty.call(WALLPAPER_TEXT_MIME_TYPES, extensionOf(path))
+}
+
+function wallpaperHtml() {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EchoMusic 壁纸模式</title>
+<style>
+html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#010304}
+#epf-wallpaper-frame{display:block;width:100vw;height:100vh;border:0;background:#010304}
+</style>
+</head>
+<body>
+<iframe id="epf-wallpaper-frame" title="EchoMusic 壁纸模式" allow="autoplay; fullscreen"></iframe>
+<script src="/player-frontend/wallpaper-bridge.js"></script>
+<script>window.EchoPlayerFrontendWallpaperBridge.start('/player-frontend/index.html?wallpaper=1');</script>
+</body>
+</html>`
+}
+
+function normalizeWallpaperMedia(media) {
+  const path = String(media?.path || '').trim()
+  if (!path) return null
+  const name = String(media?.name || path.split(/[\\/]/).pop() || 'background').slice(0, 160)
+  const extension = name.split('.').pop()?.toLowerCase() || path.split('.').pop()?.toLowerCase() || ''
+  const mime = String(media?.mime || WALLPAPER_MEDIA_MIME_BY_EXT[extension] || '').trim()
+  const type =
+    String(media?.type || '').trim() === 'video' || mime.startsWith('video/')
+      ? 'video'
+      : mime.startsWith('image/')
+        ? 'image'
+        : ''
+  if (!type || !mime || !WALLPAPER_MEDIA_MIME_BY_EXT[extension]) return null
+  if (type === 'image' && !mime.startsWith('image/')) return null
+  if (type === 'video' && !mime.startsWith('video/')) return null
+  return {
+    type,
+    path,
+    name,
+    mime,
+    size: Math.max(0, Number(media?.size || 0)),
+    modifiedAt: Number(media?.modifiedAt || 0) || 0,
+  }
+}
+
+function parseRangeHeader(rangeHeader, totalSize) {
+  const match = String(rangeHeader || '').match(/^bytes=(\d*)-(\d*)$/i)
+  if (!match || !Number.isFinite(totalSize) || totalSize < 0) return null
+  let start = match[1] === '' ? NaN : Number(match[1])
+  let end = match[2] === '' ? NaN : Number(match[2])
+  if (!Number.isFinite(start) && Number.isFinite(end)) {
+    start = Math.max(0, totalSize - end)
+    end = Math.max(0, totalSize - 1)
+  } else {
+    if (!Number.isFinite(start)) start = 0
+    if (!Number.isFinite(end)) end = Math.max(0, totalSize - 1)
+  }
+  start = Math.max(0, Math.trunc(start))
+  end = Math.min(Math.max(0, totalSize - 1), Math.trunc(end))
+  if (start > end || start >= totalSize) return null
+  return { start, end }
+}
+
+function createPlayerBridgeController(ctx, storageBridge, options = {}) {
+  const wallpaper = options.wallpaper === true
+
+  const getQueueState = () => {
+    const activeQueue =
+      ctx.playlist.activeQueue?.value ||
+      ctx.playlist.getActiveQueue?.() ||
+      ctx.stores.playlist.activeQueue ||
+      null
+    const songs = Array.isArray(activeQueue?.songs) ? activeQueue.songs : []
+    return {
+      queueId: activeQueue?.id ?? ctx.stores.playlist.activeQueueId ?? null,
+      currentTrackId: activeQueue?.currentTrackId ?? null,
+      songs,
+    }
+  }
+
+  const ensureLyricLoaded = () => {
+    const track = ctx.player.currentTrack.value || ctx.stores.player.currentTrackSnapshot
+    const hash = String(track?.hash || track?.id || ctx.stores.player.currentTrackId || '').trim()
+    if (!hash) return
+    if (
+      ctx.stores.lyric.loadedHash === hash &&
+      (ctx.stores.lyric.lines.length || ctx.stores.lyric.rawLyric)
+    ) {
+      return
+    }
+    void ctx.stores.lyric.fetchLyrics?.(hash, {
+      preserveCurrent: true,
+      track,
+      duration: ctx.stores.player.duration ? ctx.stores.player.duration * 1000 : undefined,
+      albumAudioId: track?.albumAudioId || track?.mixSongId,
+    })
+  }
+
+  const buildLyricsPayload = () => {
+    const player = ctx.stores.player
+    const lyric = ctx.stores.lyric
+    const current = normalizeSong(ctx.player.currentTrack.value || player.currentTrackSnapshot)
+    const currentId = String(player.currentTrackId ?? current?.id ?? '')
+    const hash = String(current?.hash || currentId || '').trim()
+    const loadedHash = String(lyric.loadedHash || '').trim()
+    const sourceLines = hash && loadedHash === hash && Array.isArray(lyric.lines) ? lyric.lines : []
+    const lines = sourceLines
+      .map((line, index) => normalizeLyricLine(ctx, line, index, sourceLines))
+      .filter((line) => line.text)
+    const key = [
+      currentId,
+      hash,
+      loadedHash,
+      lines
+        .map((line) =>
+          [
+            line.time_ms,
+            line.text,
+            line.secondary,
+            line.characters
+              .map((character) => [character.text, character.startTime, character.endTime].join(','))
+              .join(';'),
+          ].join(':'),
+        )
+        .join('|'),
+    ].join('::')
+
+    return {
+      key,
+      track_id: currentId,
+      hash,
+      lines,
+      tips: lyric.isLoading ? '歌词加载中...' : lyric.tips || '',
+    }
+  }
+
+  const buildPositionPayload = (cause) => {
+    const player = ctx.stores.player
+    return {
+      position_ms: Math.max(0, Math.round(Number(player.currentTime || 0) * 1000)),
+      duration_ms: Math.max(0, Math.round(Number(player.duration || 0) * 1000)),
+      is_playing: Boolean(player.isPlaying),
+      cause: cause || 'tick',
+    }
+  }
+
+  const buildSnapshot = () => {
+    const player = ctx.stores.player
+    const lyric = ctx.stores.lyric
+    const current = normalizeSong(ctx.player.currentTrack.value || player.currentTrackSnapshot)
+    const queueState = getQueueState()
+    const queue = queueState.songs.map(normalizeSong).filter(Boolean)
+    const currentId = String(player.currentTrackId ?? current?.id ?? '')
+    const currentQueueTrackId = String(queueState.currentTrackId ?? currentId)
+    const currentQueueIndex = queue.findIndex((song) => String(song.id) === currentQueueTrackId)
+
+    return {
+      track: current,
+      currentTrackId: currentId,
+      currentQueueIndex,
+      queue,
+      queueId: queueState.queueId,
+      isPlaying: Boolean(player.isPlaying),
+      currentTime: Number(player.currentTime || 0),
+      duration: Number(player.duration || current?.duration || 0),
+      volume: Number(player.volume ?? 0.8),
+      playMode: String(player.playMode || 'list'),
+      lyric: {
+        currentIndex: Number(lyric.currentIndex ?? -1),
+        tips: lyric.isLoading ? '歌词加载中...' : lyric.tips || '',
+      },
+    }
+  }
+
+  const buildAppearancePayload = () => {
+    const settings = ctx.stores.settings || ctx.settings
+    let lyricFontFamily = ''
+    try {
+      if (typeof settings?.buildLyricFontFamily === 'function') {
+        lyricFontFamily = settings.buildLyricFontFamily()
+      }
+    } catch (error) {
+      console.warn('[PlayerFrontendBridge] 读取歌词字体失败', error)
+    }
+    return {
+      lyricFontFamily: String(lyricFontFamily || '').trim(),
+    }
+  }
+
+  const buildHostControlsPayload = () => ({
+    platform: String(window.electron?.platform || ''),
+    showFullscreenButton:
+      !wallpaper && (ctx.stores.settings || ctx.settings)?.showFullscreenButton !== false,
+    canShowMiniPlayer: !wallpaper && typeof window.electron?.miniPlayer?.show === 'function',
+    wallpaperMode: wallpaper,
+  })
+
+  const handleStoragePayload = async (data) => {
+    const action = String(data?.action || 'unknown').trim() || 'unknown'
+    const key = String(data?.key || '').trim()
+    try {
+      if (!key) throw new Error('存储键为空')
+      let value = null
+      if (action === 'get') {
+        value = await storageBridge.get(key)
+      } else if (action === 'set') {
+        await storageBridge.set(key, data.value)
+        value = true
+      } else if (action === 'delete') {
+        await storageBridge.remove(key)
+        value = true
+      } else {
+        throw new Error('未知存储操作')
+      }
+      return { ok: true, value }
+    } catch (error) {
+      return {
+        ok: false,
+        error: `SQLite 存储 ${action}(${key || 'unknown'}) 失败: ${error?.message || String(error)}`,
+      }
+    }
+  }
+
+  const cyclePlayMode = () => {
+    const mode = String(ctx.stores.player.playMode || 'list')
+    const index = playModeOrder.indexOf(mode)
+    ctx.player.setPlayMode(playModeOrder[(index + 1) % playModeOrder.length])
+  }
+
+  const getQueueSongAt = (index) => {
+    const normalizedIndex = Number(index)
+    if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return null
+    const queueState = getQueueState()
+    const song = queueState.songs[normalizedIndex]
+    if (!song?.id && !song?.hash) return null
+    return { queueState, song }
+  }
+
+  const queueOptions = (queueState) =>
+    queueState?.queueId == null ? undefined : { queueId: queueState.queueId }
+
+  const commandSong = (song) => {
+    const source = song || {}
+    const normalized = normalizeSong(source)
+    if (!normalized?.id && !normalized?.hash) return null
+    return {
+      ...source,
+      ...normalized,
+      id: String(source.id ?? source.trackId ?? source.hash ?? normalized.id ?? ''),
+      hash: text(source.hash || normalized.hash || normalized.id),
+      audioUrl: text(source.audioUrl || source.url),
+      mixSongId: source.mixSongId ?? source.mixsongid ?? 0,
+    }
+  }
+
+  const playQueueIndex = async (index) => {
+    const target = getQueueSongAt(index)
+    if (!target) return
+    const { queueState, song } = target
+    const trackId = song.id || song.hash
+    if (!trackId) return
+    await ctx.player.playTrack(trackId, {
+      playlist: queueState.songs,
+      sourceQueueId: queueState.queueId,
+    })
+  }
+
+  const playCommandSong = async (song) => {
+    const target = commandSong(song)
+    if (!target) return
+    await ctx.player.playSong(target)
+  }
+
+  const playNextCommandSong = async (song) => {
+    const target = commandSong(song)
+    if (!target) return
+    await ctx.player.playNext(target)
+  }
+
+  const playNextQueueIndex = async (index) => {
+    const target = getQueueSongAt(index)
+    if (!target) return
+    await ctx.player.playNext(target.song, queueOptions(target.queueState))
+  }
+
+  const removeQueueIndex = async (index) => {
+    const target = getQueueSongAt(index)
+    if (!target) return
+    const trackId = target.song.id || target.song.hash
+    if (!trackId) return
+    await ctx.playlist.remove(trackId, target.queueState.queueId)
+  }
+
+  const clearQueue = async () => {
+    const queueState = getQueueState()
+    await ctx.playlist.clear(queueState.queueId)
+  }
+
+  const setPlayMode = (mode) => {
+    const normalized = String(mode || '')
+    if (!playModeOrder.includes(normalized)) return
+    ctx.player.setPlayMode(normalized)
+  }
+
+  const executeCommand = async (data, commandOptions = {}) => {
+    const locked = wallpaper || commandOptions.wallpaper === true
+    const command = String(data?.command || '')
+    if (
+      locked &&
+      (command === 'close' || command === 'mini-player' || command === 'window-control')
+    ) {
+      return { ok: true, ignored: true }
+    }
+
+    if (command === 'toggle-play') await ctx.player.toggle()
+    else if (command === 'play') {
+      if (!ctx.stores.player.isPlaying) await ctx.player.toggle()
+    } else if (command === 'pause') {
+      if (ctx.stores.player.isPlaying) await ctx.player.toggle()
+    } else if (command === 'prev') await ctx.player.prev()
+    else if (command === 'next') await ctx.player.next()
+    else if (command === 'seek') ctx.player.seek(Math.max(0, Number(data.value) || 0))
+    else if (command === 'volume') {
+      ctx.player.setVolume(Math.max(0, Math.min(1, Number(data.value) || 0)))
+    } else if (command === 'cycle-mode') cyclePlayMode()
+    else if (command === 'play-index') await playQueueIndex(Number(data.index))
+    else if (command === 'play-song') await playCommandSong(data.song)
+    else if (command === 'queue-play-next-song') await playNextCommandSong(data.song)
+    else if (command === 'queue-play-next-index') await playNextQueueIndex(Number(data.index))
+    else if (command === 'queue-remove-index') await removeQueueIndex(Number(data.index))
+    else if (command === 'queue-clear') await clearQueue()
+    else if (command === 'set-mode') setPlayMode(data.mode)
+    else if (command === 'close') commandOptions.close?.()
+    else if (command === 'mini-player') void window.electron?.miniPlayer?.show?.()
+    else if (command === 'window-control') {
+      const action = String(data.action || '')
+      if (['minimize', 'fullscreen', 'maximize', 'close'].includes(action)) {
+        window.electron?.windowControl?.(action)
+      }
+    }
+    return { ok: true, ignored: false }
+  }
+
+  return {
+    ensureLyricLoaded,
+    buildLyricsPayload,
+    buildPositionPayload,
+    buildSnapshot,
+    buildAppearancePayload,
+    buildHostControlsPayload,
+    handleStoragePayload,
+    executeCommand,
+  }
+}
+
+function createWallpaperWebServer(ctx, storageBridge) {
+  const bridge = createPlayerBridgeController(ctx, storageBridge, { wallpaper: true })
+  const mediaRegistry = new Map()
+  let lastSpectrumFrame = {
+    bins: [],
+    waveform: [],
+    rms: 0,
+    peak: 0,
+    state: 'idle',
+  }
+  let spectrumDispose = null
+  let started = false
+
+  const pluginAssetPath = (relativePath) => getPluginFilePath(ctx, relativePath)
+
+  const readStaticAsset = async (requestPath) => {
+    const relativePath = normalizeWallpaperStaticPath(requestPath)
+    if (!relativePath) return textResponse('Not Found', 404)
+    const absolutePath = pluginAssetPath(relativePath)
+    const contentType = contentTypeForPath(relativePath)
+    if (isTextAsset(relativePath)) {
+      const result = await ctx.fs.readTextFile(absolutePath, {
+        maxBytes: WALLPAPER_STATIC_MAX_BYTES,
+      })
+      if (!result?.ok) return textResponse(result?.error || '文件读取失败', 404)
+      if (result.truncated) return textResponse('Static asset is too large', 413)
+      return textResponse(result.content || '', 200, contentType)
+    }
+
+    const result = await ctx.fs.readFileBytes(absolutePath, {
+      maxBytes: WALLPAPER_STATIC_MAX_BYTES,
+    })
+    if (!result?.ok) return textResponse(result?.error || '文件读取失败', 404)
+    if (result.truncated) return textResponse('Static asset is too large', 413)
+    return binaryResponse(result.data, contentType)
+  }
+
+  const mediaToken = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+
+  const pruneMediaRegistry = () => {
+    const now = Date.now()
+    for (const [token, record] of mediaRegistry.entries()) {
+      if (now - record.createdAt > 30 * 60 * 1000) mediaRegistry.delete(token)
+    }
+  }
+
+  const resolveWallpaperMediaUrl = (media) => {
+    const normalized = normalizeWallpaperMedia(media)
+    if (!normalized) return { ok: false, error: '背景媒体不可用或格式不支持' }
+    pruneMediaRegistry()
+    const token = mediaToken()
+    mediaRegistry.set(token, {
+      media: normalized,
+      createdAt: Date.now(),
+    })
+    return {
+      ok: true,
+      url: `/media/background/${encodeURIComponent(token)}/${encodeURIComponent(normalized.name)}`,
+    }
+  }
+
+  const resolveMediaSize = async (media) => {
+    if (media.size > 0) return media.size
+    const result = await ctx.fs.readFileBytes(media.path, {
+      offset: 0,
+      length: 0,
+      maxBytes: 1,
+    })
+    if (!result?.ok) throw new Error(result?.error || '背景媒体文件不可访问')
+    return Math.max(0, Number(result.size || 0))
+  }
+
+  const serveRegisteredMedia = async (request) => {
+    const match = String(request.path || '').match(/^\/media\/background\/([^/]+)/)
+    const token = match ? safeDecodePath(match[1]) : ''
+    const record = token ? mediaRegistry.get(token) : null
+    if (!record) return textResponse('Media Not Found', 404)
+
+    const media = record.media
+    const totalSize = await resolveMediaSize(media)
+    const rangeHeader = firstHeaderValue(request.headers, 'range')
+    const requestedRange = parseRangeHeader(rangeHeader, totalSize)
+    const needsPartial = media.type === 'video' || totalSize > WALLPAPER_MEDIA_CHUNK_BYTES
+    let start = requestedRange?.start ?? 0
+    let end = requestedRange?.end ?? Math.max(0, totalSize - 1)
+
+    if (needsPartial) {
+      end = Math.min(end, start + WALLPAPER_MEDIA_CHUNK_BYTES - 1)
+    }
+
+    const status = requestedRange || needsPartial ? 206 : 200
+    const length = totalSize <= 0 ? 0 : Math.max(0, end - start + 1)
+    const result = await ctx.fs.readFileBytes(media.path, {
+      offset: start,
+      length,
+      maxBytes: Math.max(1, Math.min(length || 1, WALLPAPER_MEDIA_CHUNK_BYTES)),
+    })
+    if (!result?.ok) return textResponse(result?.error || '背景媒体读取失败', 404)
+
+    const headers = {
+      'accept-ranges': 'bytes',
+      'cache-control': 'no-store',
+    }
+    if (status === 206) headers['content-range'] = `bytes ${start}-${end}/${totalSize}`
+    return binaryResponse(result.data, media.mime, headers, status)
+  }
+
+  const apiResponse = async (request) => {
+    const method = String(request.method || 'GET').toUpperCase()
+    const path = String(request.path || '')
+
+    if (method === 'GET' && path === '/api/bootstrap') {
+      bridge.ensureLyricLoaded()
+      return jsonResponse({
+        ok: true,
+        init: {
+          directEnter: true,
+          wallpaperMode: true,
+          pluginVersion: String(ctx.manifest?.version || ''),
+          hostControls: bridge.buildHostControlsPayload(),
+          appearance: bridge.buildAppearancePayload(),
+        },
+        snapshot: bridge.buildSnapshot(),
+        lyrics: bridge.buildLyricsPayload(),
+        position: bridge.buildPositionPayload('init'),
+        spectrum: lastSpectrumFrame,
+      })
+    }
+
+    if (method === 'GET' && path === '/api/snapshot') {
+      bridge.ensureLyricLoaded()
+      return jsonResponse({ ok: true, payload: bridge.buildSnapshot() })
+    }
+    if (method === 'GET' && path === '/api/lyrics') {
+      bridge.ensureLyricLoaded()
+      return jsonResponse({ ok: true, payload: bridge.buildLyricsPayload() })
+    }
+    if (method === 'GET' && path === '/api/position') {
+      return jsonResponse({ ok: true, payload: bridge.buildPositionPayload('tick') })
+    }
+    if (method === 'GET' && path === '/api/appearance') {
+      return jsonResponse({ ok: true, payload: bridge.buildAppearancePayload() })
+    }
+    if (method === 'GET' && path === '/api/spectrum') {
+      return jsonResponse({ ok: true, payload: lastSpectrumFrame })
+    }
+    if (method === 'POST' && path === '/api/storage') {
+      return jsonResponse(await bridge.handleStoragePayload(requestJson(request)))
+    }
+    if (method === 'POST' && path === '/api/background-select') {
+      return jsonResponse({
+        ok: false,
+        canceled: true,
+        error: '壁纸网页不支持打开主程序文件选择器',
+      })
+    }
+    if (method === 'POST' && path === '/api/background-resolve') {
+      const data = requestJson(request)
+      return jsonResponse(resolveWallpaperMediaUrl(data.media || {}))
+    }
+    if (method === 'POST' && path === '/api/command') {
+      const data = requestJson(request)
+      const result = await bridge.executeCommand(data, { wallpaper: true })
+      return jsonResponse(result)
+    }
+
+    return textResponse('Not Found', 404)
+  }
+
+  const handler = async (request) => {
+    try {
+      const path = String(request.path || '/')
+      if (path === '/' || path === '/wallpaper') {
+        return textResponse(wallpaperHtml(), 200, 'text/html; charset=utf-8')
+      }
+      if (path === '/health') {
+        return jsonResponse({
+          ok: true,
+          mode: 'wallpaper',
+          port: WALLPAPER_WEB_PORT,
+        })
+      }
+      if (path.startsWith('/api/')) return apiResponse(request)
+      if (path.startsWith('/media/background/')) return serveRegisteredMedia(request)
+      if (path.startsWith('/player-frontend/') || path === '/wallpaper-bridge.js') {
+        return readStaticAsset(path)
+      }
+      if (path === '/favicon.ico') return { status: 204, body: '' }
+      return textResponse('Not Found', 404)
+    } catch (error) {
+      console.warn('[PlayerFrontendWallpaper] 请求处理失败', error)
+      return textResponse(error?.message || '壁纸服务请求处理失败', 500)
+    }
+  }
+
+  const start = async () => {
+    try {
+      spectrumDispose = ctx.audio.spectrum.subscribe(
+        { fps: 24, binCount: 64, smoothing: 0.82, scale: 'mel', includeWaveform: true },
+        (frame) => {
+          lastSpectrumFrame = {
+            bins: Array.isArray(frame?.bins) ? frame.bins : [],
+            waveform: Array.isArray(frame?.waveform) ? frame.waveform : [],
+            rms: Number(frame?.rms || 0),
+            peak: Number(frame?.peak || 0),
+            state: frame?.state || 'idle',
+            timePos: frame?.timePos,
+          }
+        },
+      )
+    } catch (error) {
+      spectrumDispose = null
+      console.warn('[PlayerFrontendWallpaper] 频谱订阅失败', error)
+    }
+
+    const result = await ctx.webServer.listen(handler, {
+      host: WALLPAPER_WEB_HOST,
+      port: WALLPAPER_WEB_PORT,
+    })
+    if (result?.ok) {
+      started = true
+      console.info(`[PlayerFrontendWallpaper] 壁纸服务已启动: ${result.url}`)
+    } else {
+      console.warn('[PlayerFrontendWallpaper] 壁纸服务启动失败', result?.error || '未知错误')
+    }
+    return result
+  }
+
+  const close = () => {
+    if (spectrumDispose) spectrumDispose()
+    spectrumDispose = null
+    mediaRegistry.clear()
+    if (started) void ctx.webServer.close()
+    started = false
+  }
+
+  return { start, close }
 }
 
 // 创建真正承载 iframe 的覆盖层组件。组件内部维护宿主状态快照、消息桥和资源清理逻辑。
@@ -1158,10 +1888,16 @@ function createPlayerOverlay(ctx, overlayOpen, closeOverlay, storageBridge) {
 export function activate(ctx) {
   const overlayOpen = ctx.vue.ref(false)
   const storageBridge = createPluginSqliteStore(ctx)
+  const wallpaperServer = createWallpaperWebServer(ctx, storageBridge)
 
   // 激活时先预热数据库；失败时仅记录日志，具体错误在请求时继续向 iframe 回传。
   void storageBridge.warmup().catch((error) => {
     console.warn('[PlayerFrontendBridge] SQLite 预热失败', error)
+  })
+
+  // 注册固定 17196 端口的壁纸网页，供本机外部壁纸程序访问。
+  void wallpaperServer.start().catch((error) => {
+    console.warn('[PlayerFrontendWallpaper] 壁纸服务启动异常', error)
   })
 
   // 关闭覆盖层时同步关闭宿主歌词视图，避免宿主状态仍认为歌词页处于打开状态。
@@ -1207,6 +1943,7 @@ export function activate(ctx) {
     stopLyricWatch()
     stopLegacyRouteWatch()
     closeOverlay()
+    wallpaperServer.close()
     void storageBridge.close().catch((error) => {
       console.warn('[PlayerFrontendBridge] SQLite 关闭失败', error)
     })
