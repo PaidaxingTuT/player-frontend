@@ -4,9 +4,256 @@
 // 3. 在宿主播放器状态、歌词、频谱数据和 iframe 页面之间转发消息。
 const LEGACY_PAGE_PATH = '/main/plugin/player-frontend/player'
 const FALLBACK_PATH = '/main/home'
+const SQLITE_BUSY_TIMEOUT_MS = 5000
+const SQLITE_DEPTH_KEY_PREFIX = 'depth:v1:'
+const SQLITE_MIGRATIONS = [
+  {
+    version: 1,
+    sql: `CREATE TABLE IF NOT EXISTS kv_store (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS depth_cache (
+        hash TEXT PRIMARY KEY,
+        data_url TEXT NOT NULL,
+        width INTEGER NOT NULL DEFAULT 0,
+        height INTEGER NOT NULL DEFAULT 0,
+        format TEXT NOT NULL DEFAULT '',
+        ai INTEGER NOT NULL DEFAULT 1,
+        timestamp INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_depth_cache_updated_at ON depth_cache(updated_at DESC);`,
+  },
+]
 
 // 宿主播放器的播放模式顺序，用于 iframe 请求“切换模式”时循环到下一项。
 const playModeOrder = ['sequential', 'list', 'random', 'single']
+
+// SQLite 句柄可能被宿主或其他运行时关闭，这里统一识别可重试的错误。
+function isSqliteHandleClosedError(error) {
+  return /database is not open/i.test(String(error || ''))
+}
+
+// 统一序列化要写入 kv_store 的 JSON 值；顶层 undefined 退化为 null。
+function stringifySqliteJson(value) {
+  if (value === undefined) return 'null'
+  const json = JSON.stringify(value)
+  return typeof json === 'string' ? json : 'null'
+}
+
+// 解析 iframe 传来的逻辑存储键，区分通用 KV 和深度缓存。
+function parseSqliteStorageKey(key) {
+  const normalizedKey = String(key || '').trim()
+  if (!normalizedKey) throw new Error('存储键为空')
+  if (normalizedKey.startsWith(SQLITE_DEPTH_KEY_PREFIX)) {
+    const hash = normalizedKey.slice(SQLITE_DEPTH_KEY_PREFIX.length).trim()
+    if (!hash) throw new Error('深度缓存键缺少哈希')
+    return { kind: 'depth', key: normalizedKey, hash }
+  }
+  return { kind: 'kv', key: normalizedKey }
+}
+
+// 为宿主桥接创建 SQLite 单例仓储，iframe 继续通过 postMessage 访问。
+function createPluginSqliteStore(ctx) {
+  let dbHandle = null
+  let openPromise = null
+  let storeClosed = false
+
+  // 按需打开默认 main 库，并执行一次 schema migration。
+  const openDatabase = async () => {
+    if (storeClosed) throw new Error('插件数据库已关闭')
+    if (dbHandle?.ok) return dbHandle
+    if (!ctx?.sqlite?.open) throw new Error('宿主未提供 SQLite 能力')
+    if (!openPromise) {
+      openPromise = ctx.sqlite
+        .open({
+          busyTimeoutMs: SQLITE_BUSY_TIMEOUT_MS,
+          migrations: SQLITE_MIGRATIONS,
+        })
+        .then(async (db) => {
+          if (!db?.ok) throw new Error(`插件数据库打开或迁移失败: ${db?.error || '未知错误'}`)
+          if (storeClosed) {
+            try {
+              await db.close()
+            } catch {}
+            throw new Error('插件数据库已关闭')
+          }
+          dbHandle = db
+          openPromise = null
+          return db
+        })
+        .catch((error) => {
+          dbHandle = null
+          openPromise = null
+          throw error
+        })
+    }
+    return openPromise
+  }
+
+  // 单次 SQL 操作的公共重试层：遇到句柄失效时丢弃旧句柄并重开一次。
+  const withDatabaseResult = async (runner) => {
+    let db = await openDatabase()
+    let result = await runner(db)
+    if (result?.ok !== false || !isSqliteHandleClosedError(result.error)) return result
+    dbHandle = null
+    db = await openDatabase()
+    return runner(db)
+  }
+
+  // 从 kv_store 读取并解析 JSON。
+  const readKvJson = async (key) => {
+    const result = await withDatabaseResult((db) =>
+      db.get('SELECT value_json FROM kv_store WHERE key = ?', [key]),
+    )
+    if (!result?.ok) throw new Error(`插件数据库读取 ${key} 失败: ${result?.error || '未知错误'}`)
+    if (!result.row) return null
+    const valueJson = String(result.row.value_json ?? '')
+    try {
+      return JSON.parse(valueJson)
+    } catch (error) {
+      throw new Error(`插件数据库键 ${key} 的 JSON 解析失败: ${error?.message || String(error)}`)
+    }
+  }
+
+  // 向 kv_store 写入完整 JSON 值。
+  const writeKvJson = async (key, value) => {
+    const valueJson = stringifySqliteJson(value)
+    const updatedAt = Date.now()
+    const result = await withDatabaseResult((db) =>
+      db.run(
+        `INSERT INTO kv_store (key, value_json, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           value_json = excluded.value_json,
+           updated_at = excluded.updated_at`,
+        [key, valueJson, updatedAt],
+      ),
+    )
+    if (!result?.ok) throw new Error(`插件数据库写入 ${key} 失败: ${result?.error || '未知错误'}`)
+    return true
+  }
+
+  // 删除 kv_store 中的一个逻辑键。
+  const deleteKvKey = async (key) => {
+    const result = await withDatabaseResult((db) =>
+      db.run('DELETE FROM kv_store WHERE key = ?', [key]),
+    )
+    if (!result?.ok) throw new Error(`插件数据库删除 ${key} 失败: ${result?.error || '未知错误'}`)
+    return true
+  }
+
+  // 读取结构化深度缓存，并还原成前端原先使用的对象结构。
+  const readDepthCache = async (hash) => {
+    const result = await withDatabaseResult((db) =>
+      db.get(
+        `SELECT hash, data_url, width, height, format, ai, timestamp
+         FROM depth_cache
+         WHERE hash = ?`,
+        [hash],
+      ),
+    )
+    if (!result?.ok) throw new Error(`深度缓存读取 ${hash} 失败: ${result?.error || '未知错误'}`)
+    if (!result.row) return null
+    return {
+      hash: String(result.row.hash ?? hash),
+      dataUrl: String(result.row.data_url ?? ''),
+      width: Math.max(0, Number(result.row.width || 0)),
+      height: Math.max(0, Number(result.row.height || 0)),
+      format: String(result.row.format ?? ''),
+      ai: Number(result.row.ai ?? 1) !== 0,
+      timestamp: Number(result.row.timestamp || 0) || 0,
+    }
+  }
+
+  // 写入结构化深度缓存，避免把大 dataUrl 塞进通用 JSON 表。
+  const writeDepthCache = async (hash, payload) => {
+    const dataUrl = String(payload?.dataUrl || '').trim()
+    if (!dataUrl) throw new Error('深度缓存缺少 dataUrl')
+    const width = Math.max(0, Number(payload?.width || 0))
+    const height = Math.max(0, Number(payload?.height || 0))
+    const format = String(payload?.format || '').trim()
+    const ai = payload?.ai === false ? 0 : 1
+    const timestamp = Number(payload?.timestamp || Date.now()) || Date.now()
+    const updatedAt = Date.now()
+    const result = await withDatabaseResult((db) =>
+      db.run(
+        `INSERT INTO depth_cache (hash, data_url, width, height, format, ai, timestamp, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(hash) DO UPDATE SET
+           data_url = excluded.data_url,
+           width = excluded.width,
+           height = excluded.height,
+           format = excluded.format,
+           ai = excluded.ai,
+           timestamp = excluded.timestamp,
+           updated_at = excluded.updated_at`,
+        [hash, dataUrl, width, height, format, ai, timestamp, updatedAt],
+      ),
+    )
+    if (!result?.ok) throw new Error(`深度缓存写入 ${hash} 失败: ${result?.error || '未知错误'}`)
+    return true
+  }
+
+  // 删除一个深度缓存键。
+  const deleteDepthCache = async (hash) => {
+    const result = await withDatabaseResult((db) =>
+      db.run('DELETE FROM depth_cache WHERE hash = ?', [hash]),
+    )
+    if (!result?.ok) throw new Error(`深度缓存删除 ${hash} 失败: ${result?.error || '未知错误'}`)
+    return true
+  }
+
+  // 对外暴露与原桥接协议一致的 get/set/delete 抽象。
+  const get = async (key) => {
+    const parsed = parseSqliteStorageKey(key)
+    return parsed.kind === 'depth' ? readDepthCache(parsed.hash) : readKvJson(parsed.key)
+  }
+
+  const set = async (key, value) => {
+    const parsed = parseSqliteStorageKey(key)
+    if (parsed.kind === 'depth') return writeDepthCache(parsed.hash, value)
+    return writeKvJson(parsed.key, value)
+  }
+
+  const remove = async (key) => {
+    const parsed = parseSqliteStorageKey(key)
+    if (parsed.kind === 'depth') return deleteDepthCache(parsed.hash)
+    return deleteKvKey(parsed.key)
+  }
+
+  // 激活阶段预热数据库，减少 iframe 首次读写时的等待。
+  const warmup = async () => {
+    await openDatabase()
+  }
+
+  // 插件停用时集中关闭同名句柄。
+  const close = async () => {
+    storeClosed = true
+    const pending = openPromise
+    const current = dbHandle
+    dbHandle = null
+    openPromise = null
+    if (pending) {
+      try {
+        await pending
+      } catch {}
+    }
+    if (!current?.ok || typeof current.close !== 'function') return
+    const result = await current.close()
+    if (!result?.ok) throw new Error(result?.error || '插件数据库关闭失败')
+  }
+
+  return {
+    get,
+    set,
+    remove,
+    warmup,
+    close,
+  }
+}
 
 // 兼容旧版插件路由：如果用户还停留在旧页面地址，后续会重定向回首页并改用覆盖层。
 function isLegacyPluginPlayerPath(path) {
@@ -119,7 +366,7 @@ function normalizeLyricLine(ctx, line, index, lines) {
 }
 
 // 创建真正承载 iframe 的覆盖层组件。组件内部维护宿主状态快照、消息桥和资源清理逻辑。
-function createPlayerFrame(ctx, closeOverlay) {
+function createPlayerFrame(ctx, closeOverlay, storageBridge) {
   const { defineComponent, h, ref, onMounted, onBeforeUnmount } = ctx.vue
 
   return defineComponent({
@@ -153,6 +400,167 @@ function createPlayerFrame(ctx, closeOverlay) {
           },
           '*',
         )
+      }
+
+      // 宿主持久化统一收敛到 SQLite 仓储，iframe 仍复用原有请求协议。
+      const replyRequest = (requestId, payload) => {
+        if (!requestId) return
+        postToFrame({
+          ...payload,
+          requestId,
+        })
+      }
+
+      // 兼容宿主文件选择返回的不同形态，统一抽取第一个文件。
+      const firstSelectedFile = (result) => {
+        if (!result || result.canceled) return null
+        const list =
+          (Array.isArray(result) && result) ||
+          result.filePaths ||
+          result.files ||
+          result.paths ||
+          result.value ||
+          []
+        if (typeof list === 'string') return { path: list }
+        if (!Array.isArray(list) || !list.length) return null
+        const item = list[0]
+        return typeof item === 'string' ? { path: item } : item
+      }
+
+      // 从路径或文件元数据推断浏览器可识别的媒体类型。
+      const mediaInfoFromFile = (file) => {
+        const path = String(file?.path || file?.filePath || file?.fullPath || '').trim()
+        if (!path) return null
+        const name = String(file?.name || path.split(/[\\/]/).pop() || '').trim()
+        const ext = name.split('.').pop()?.toLowerCase() || ''
+        const imageMimes = {
+          jpg: 'image/jpeg',
+          jpeg: 'image/jpeg',
+          png: 'image/png',
+          webp: 'image/webp',
+        }
+        const videoMimes = {
+          mp4: 'video/mp4',
+          webm: 'video/webm',
+          mov: 'video/quicktime',
+        }
+        const mime = String(file?.mime || file?.type || imageMimes[ext] || videoMimes[ext] || '').trim()
+        const type = mime.startsWith('video/') ? 'video' : (mime.startsWith('image/') ? 'image' : '')
+        if (!type) return null
+        return {
+          type,
+          path,
+          name,
+          mime,
+          size: Math.max(0, Number(file?.size || 0)),
+          modifiedAt: Number(file?.modifiedAt || file?.lastModified || 0) || 0,
+        }
+      }
+
+      // 将真实文件路径解析成 iframe 可播放 URL；失败时只报错，不改数据库。
+      const resolveMediaUrl = async (media) => {
+        const path = String(media?.path || '').trim()
+        if (!path) return { ok: false, error: '背景媒体路径为空' }
+        const result = await ctx.fs.getFileUrl(path)
+        if (!result?.ok || !result.url) {
+          return { ok: false, error: result?.error || '背景媒体文件不可访问' }
+        }
+        return { ok: true, url: result.url }
+      }
+
+      // 处理 iframe 发来的持久化请求，并转到宿主 SQLite 单例仓储。
+      const handleStorageRequest = async (data) => {
+        const requestId = data.requestId
+        const action = String(data?.action || 'unknown').trim() || 'unknown'
+        const key = String(data?.key || '').trim()
+        try {
+          if (!key) throw new Error('存储键为空')
+          let value = null
+          if (action === 'get') {
+            value = await storageBridge.get(key)
+          } else if (action === 'set') {
+            await storageBridge.set(key, data.value)
+            value = true
+          } else if (action === 'delete') {
+            await storageBridge.remove(key)
+            value = true
+          } else {
+            throw new Error('未知存储操作')
+          }
+          replyRequest(requestId, {
+            type: 'echo-player-frontend:storage-result',
+            ok: true,
+            value,
+          })
+        } catch (error) {
+          replyRequest(requestId, {
+            type: 'echo-player-frontend:storage-result',
+            ok: false,
+            error: `SQLite 存储 ${action}(${key || 'unknown'}) 失败: ${error?.message || String(error)}`,
+          })
+        }
+      }
+
+      // 打开宿主文件选择器，并返回只包含路径元数据和临时 URL 的媒体对象。
+      const handleBackgroundSelectRequest = async (data) => {
+        const requestId = data.requestId
+        try {
+          const result = await ctx.dialog.selectFiles({
+            title: '选择背景媒体',
+            filters: [
+              {
+                name: '图片或视频',
+                extensions: ['jpg', 'jpeg', 'png', 'webp', 'mp4', 'webm', 'mov'],
+              },
+            ],
+            properties: ['openFile'],
+          })
+          const file = firstSelectedFile(result)
+          if (!file) {
+            replyRequest(requestId, {
+              type: 'echo-player-frontend:background-select-result',
+              ok: false,
+              canceled: true,
+            })
+            return
+          }
+          const media = mediaInfoFromFile(file)
+          if (!media) throw new Error('请选择支持的图片或视频文件')
+          const resolved = await resolveMediaUrl(media)
+          if (!resolved.ok) throw new Error(resolved.error)
+          replyRequest(requestId, {
+            type: 'echo-player-frontend:background-select-result',
+            ok: true,
+            media,
+            url: resolved.url,
+          })
+        } catch (error) {
+          replyRequest(requestId, {
+            type: 'echo-player-frontend:background-select-result',
+            ok: false,
+            error: error?.message || String(error),
+          })
+        }
+      }
+
+      // 重新把数据库中的背景路径解析成 iframe 可用 URL。
+      const handleBackgroundResolveRequest = async (data) => {
+        const requestId = data.requestId
+        try {
+          const resolved = await resolveMediaUrl(data.media || {})
+          if (!resolved.ok) throw new Error(resolved.error)
+          replyRequest(requestId, {
+            type: 'echo-player-frontend:background-resolve-result',
+            ok: true,
+            url: resolved.url,
+          })
+        } catch (error) {
+          replyRequest(requestId, {
+            type: 'echo-player-frontend:background-resolve-result',
+            ok: false,
+            error: error?.message || String(error),
+          })
+        }
       }
 
       // 主动队列可能来自响应式 ref、方法或 store 字段，这里统一取出队列 id、当前项和歌曲列表。
@@ -596,6 +1004,15 @@ function createPlayerFrame(ctx, closeOverlay) {
           case 'echo-player-frontend:command':
             handleCommand(data)
             break
+          case 'echo-player-frontend:storage':
+            void handleStorageRequest(data)
+            break
+          case 'echo-player-frontend:background-select':
+            void handleBackgroundSelectRequest(data)
+            break
+          case 'echo-player-frontend:background-resolve':
+            void handleBackgroundResolveRequest(data)
+            break
           case 'echo-player-frontend:request-snapshot':
             pushSnapshot(true)
             pushLyrics(true)
@@ -725,9 +1142,9 @@ function createPlayerFrame(ctx, closeOverlay) {
 }
 
 // 外层组件只根据 overlayOpen 控制 iframe 宿主组件是否存在。
-function createPlayerOverlay(ctx, overlayOpen, closeOverlay) {
+function createPlayerOverlay(ctx, overlayOpen, closeOverlay, storageBridge) {
   const { defineComponent, h } = ctx.vue
-  const PlayerFrame = createPlayerFrame(ctx, closeOverlay)
+  const PlayerFrame = createPlayerFrame(ctx, closeOverlay, storageBridge)
 
   return defineComponent({
     name: 'PlayerFrontendOverlayHost',
@@ -740,6 +1157,12 @@ function createPlayerOverlay(ctx, overlayOpen, closeOverlay) {
 // 插件激活入口：注册覆盖层、监听歌词视图开关，并迁移旧路由入口。
 export function activate(ctx) {
   const overlayOpen = ctx.vue.ref(false)
+  const storageBridge = createPluginSqliteStore(ctx)
+
+  // 激活时先预热数据库；失败时仅记录日志，具体错误在请求时继续向 iframe 回传。
+  void storageBridge.warmup().catch((error) => {
+    console.warn('[PlayerFrontendBridge] SQLite 预热失败', error)
+  })
 
   // 关闭覆盖层时同步关闭宿主歌词视图，避免宿主状态仍认为歌词页处于打开状态。
   const closeOverlay = () => {
@@ -754,7 +1177,7 @@ export function activate(ctx) {
   }
 
   // 将覆盖层传送到宿主 UI 根节点，由宿主负责生命周期和层级挂载。
-  ctx.ui.teleport(createPlayerOverlay(ctx, overlayOpen, closeOverlay), {
+  ctx.ui.teleport(createPlayerOverlay(ctx, overlayOpen, closeOverlay, storageBridge), {
     id: 'player-frontend-overlay',
     className: 'epf-overlay-host',
   })
@@ -784,6 +1207,9 @@ export function activate(ctx) {
     stopLyricWatch()
     stopLegacyRouteWatch()
     closeOverlay()
+    void storageBridge.close().catch((error) => {
+      console.warn('[PlayerFrontendBridge] SQLite 关闭失败', error)
+    })
   })
 }
 

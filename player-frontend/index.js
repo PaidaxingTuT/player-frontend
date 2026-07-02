@@ -50,19 +50,124 @@ var playlist = [], playQueue = [], currentIdx = -1, playing = false, playToggleB
 var volumeTween = null, trackSwitchToken = 0;
 // 歌单封面加载缓存，避免 3D 歌单架重复请求同一封面。
 var playlistCoverCache = {};
-// 本地视觉布局和歌词设置的 localStorage 键名。
-var LYRIC_LAYOUT_STORE_KEY = 'mineradio-lyric-layout-v1';
+// 宿主桥接消息来源标识。
+var ECHO_BRIDGE_CHILD_SOURCE = 'echo-player-frontend-child';
+var ECHO_BRIDGE_PARENT_SOURCE = 'echo-player-frontend-parent';
+// 插件数据库键名。
+var EPF_STATE_STORE_KEY = 'state:v1';
+var EPF_USER_FX_ARCHIVE_STORE_KEY = 'user-fx-archives:v1';
+var EPF_DEPTH_STORE_PREFIX = 'depth:v1:';
+// 新版深度缓存只保存不透明灰度深度图，避免把亮度通道当 PNG alpha 回读。
+var EPF_DEPTH_CACHE_FORMAT = 'depth-r-opaque-v2';
+// 深度缓存输入至少应为真实辅助纹理尺寸，避免 4×4 占位图写入数据库。
+var EPF_MIN_DEPTH_CACHE_SIZE = 32;
+// 已从宿主数据库读出的状态快照；启动早期为空时使用打包默认值。
+var persistedStateSnapshot = null;
+// 已从宿主数据库读出的用户视觉存档原始数组。
+var persistedUserFxArchivesRaw = null;
+// state:v1 是否已经完成首次读取；读取前不写入，避免默认值覆盖旧数据。
+var hostStateLoaded = false;
+// 用户视觉存档是否已经完成首次读取。
+var hostUserFxArchivesLoaded = false;
+// 宿主请求序号和等待表。
+var hostRequestSeq = 0;
+var hostRequestPending = {};
+// 状态写入合并缓存，避免滑块拖动时密集写库。
+var pendingStatePatch = null;
+var pendingStateSaveTimer = 0;
+
+// 向父层发送宿主桥接请求。
+function postParentBridgeMessage(type, extra) {
+  try {
+    parent.postMessage(Object.assign({
+      source: ECHO_BRIDGE_CHILD_SOURCE,
+      type: type
+    }, extra || {}), '*');
+  } catch (e) {}
+}
+
+// 发起带 requestId 的宿主请求。
+function requestHostBridge(type, payload, timeoutMs) {
+  var requestId = 'req-' + (++hostRequestSeq) + '-' + Date.now();
+  return new Promise(function(resolve, reject){
+    var timer = setTimeout(function(){
+      delete hostRequestPending[requestId];
+      reject(new Error('宿主请求超时'));
+    }, timeoutMs || 12000);
+    hostRequestPending[requestId] = {
+      resolve: resolve,
+      reject: reject,
+      timer: timer
+    };
+    postParentBridgeMessage(type, Object.assign({ requestId: requestId }, payload || {}));
+  });
+}
+
+// 完成宿主异步请求。
+function settleHostBridgeRequest(data) {
+  var requestId = data && data.requestId;
+  var pending = requestId && hostRequestPending[requestId];
+  if (!pending) return false;
+  delete hostRequestPending[requestId];
+  clearTimeout(pending.timer);
+  if (data.ok || data.canceled) pending.resolve(data);
+  else pending.reject(new Error(data.error || '宿主请求失败'));
+  return true;
+}
+
+// 接收宿主请求结果，播放桥接消息仍由后面的播放器桥接层处理。
+window.addEventListener('message', function(event) {
+  var data = event && event.data;
+  if (!data || data.source !== ECHO_BRIDGE_PARENT_SOURCE) return;
+  if (
+    data.type === 'echo-player-frontend:storage-result' ||
+    data.type === 'echo-player-frontend:background-select-result' ||
+    data.type === 'echo-player-frontend:background-resolve-result'
+  ) {
+    settleHostBridgeRequest(data);
+  }
+});
+
+// 从宿主数据库读取单个键。
+function hostStorageGet(key) {
+  return requestHostBridge('echo-player-frontend:storage', { action: 'get', key: key }).then(function(result){
+    return result.value;
+  });
+}
+
+// 写入宿主数据库。
+function hostStorageSet(key, value) {
+  return requestHostBridge('echo-player-frontend:storage', { action: 'set', key: key, value: value }).then(function(){
+    return true;
+  });
+}
+
+// 合并并延迟写入 state:v1。
+function saveStatePatch(patch, delay) {
+  if (!patch || typeof patch !== 'object') return;
+  if (!hostStateLoaded) return;
+  persistedStateSnapshot = Object.assign({}, persistedStateSnapshot || {}, patch);
+  pendingStatePatch = Object.assign({}, pendingStatePatch || {}, patch);
+  clearTimeout(pendingStateSaveTimer);
+  pendingStateSaveTimer = setTimeout(function(){
+    var next = Object.assign({}, persistedStateSnapshot || {}, pendingStatePatch || {});
+    pendingStatePatch = null;
+    hostStorageSet(EPF_STATE_STORE_KEY, next).catch(function(err){
+      console.warn('[存储] 状态写入失败', err);
+    });
+  }, delay == null ? 180 : delay);
+}
 // 视觉预设存档结构版本，用于兼容旧存档迁移。
 var VISUAL_PRESET_SCHEMA = 'skull-preset-v2';
 // 默认播放视觉预设索引。
 var DEFAULT_PLAYBACK_VISUAL_PRESET = 0;
 // 最大可用视觉预设索引，所有外部输入都会被限制到这个范围。
 var MAX_VISUAL_PRESET_INDEX = 6;
-// 播放队列面板固定状态的 localStorage 键名。
+// 播放队列面板固定状态的数据库偏好键名。
 var PLAYLIST_PANEL_PIN_STORE_KEY = 'mineradio-playlist-panel-pinned-v1';
-// 底部控制条自动隐藏偏好的 localStorage 键名。
+// 底部控制条自动隐藏偏好的数据库偏好键名。
 var CONTROLS_AUTO_HIDE_STORE_KEY = 'mineradio-controls-auto-hide-v1';
-// 自由相机配置的 localStorage 键名。
+// 自由相机配置在 state:v1 中的字段名。
 var FREE_CAMERA_STORE_KEY = 'mineradio-free-camera-v1';
 // 把任意输入规整为合法视觉预设索引，异常值回退到 fallback 或默认预设。
 function normalizeVisualPresetIndex(value, fallback) {
@@ -139,34 +244,25 @@ var PLAYLIST_DETAIL_BATCH_SIZE = 48;
 // 平滑滚轮处理器是否已经绑定，防止重复监听。
 var smoothWheelScrollBound = false;
 // 封面处理和 AI 深度估计都是异步的，coverProcessToken 用来丢弃已经过期的图片加载或模型结果。
-var coverProcessToken = 0, currentCoverDepthCacheSeed = '', aiDepthPipeline = null, aiDepthReady = false, aiDepthBusy = false, aiDepthFailUntil = 0;
+var coverProcessToken = 0, currentCoverDepthCacheSeed = '', currentCoverEdgeCacheSeed = '', aiDepthPipeline = null, aiDepthReady = false, aiDepthBusy = false, aiDepthFailUntil = 0;
 // AI 深度最近运行时间和最小间隔，防止频繁切歌时连续触发模型推理。
 var aiDepthLastRunAt = 0, aiDepthMinGapMs = 18000;
-// 从本地存储读取音量，读取失败或值非法时使用最大音量。
+// 从宿主数据库状态读取音量，读取失败或值非法时使用最大音量。
 function readSavedVolume() {
-  try {
-    // 历史播放器使用 apex-player-volume 作为音量键，桥接模式继续兼容这个键。
-    var v = parseFloat(localStorage.getItem('apex-player-volume'));
-    // 音量必须位于 0..1，非法值回退到 1.0。
-    return isFinite(v) ? Math.max(0, Math.min(1, v)) : 1.0;
-  } catch (e) {
-    return 1.0;
-  }
+  var v = persistedStateSnapshot && Number(persistedStateSnapshot.volume);
+  return isFinite(v) ? Math.max(0, Math.min(1, v)) : 1.0;
 }
-// 读取布尔偏好，localStorage 中 '1' 表示 true，其余非空值表示 false。
+// 读取布尔偏好，启动早期没有数据库状态时使用默认值。
 function readBooleanPreference(key, fallback) {
-  try {
-    // 未保存时返回调用方传入的默认值。
-    var raw = localStorage.getItem(key);
-    if (raw == null) return !!fallback;
-    return raw === '1';
-  } catch (e) {
-    return !!fallback;
-  }
+  var prefs = persistedStateSnapshot && persistedStateSnapshot.booleanPreferences;
+  if (!prefs || !Object.prototype.hasOwnProperty.call(prefs, key)) return !!fallback;
+  return !!prefs[key];
 }
-// 保存布尔偏好，使用 '1'/'0' 便于旧代码和手工调试识别。
+// 保存布尔偏好到宿主数据库状态。
 function saveBooleanPreference(key, on) {
-  try { localStorage.setItem(key, on ? '1' : '0'); } catch (e) {}
+  var prefs = Object.assign({}, (persistedStateSnapshot && persistedStateSnapshot.booleanPreferences) || {});
+  prefs[key] = !!on;
+  saveStatePatch({ booleanPreferences: prefs });
 }
 // 当前目标音量，启动时从本地存储恢复。
 var targetVolume = readSavedVolume();
@@ -577,8 +673,8 @@ function normalizeDevelopmentLockedFxState() {
 // 从本地布局存档里读取上次使用的视觉预设索引。
 function readSavedPlaybackVisualPreset() {
   try {
-    // 存档损坏时 JSON.parse 会抛错，catch 中回退默认预设。
-    var raw = JSON.parse(localStorage.getItem(LYRIC_LAYOUT_STORE_KEY) || '{}') || {};
+    // 启动早期数据库状态可能尚未返回，此时回退默认预设。
+    var raw = (persistedStateSnapshot && persistedStateSnapshot.lyricLayout) || {};
     // 旧用户没有保存 preset 时直接使用默认播放预设。
     if (!Object.prototype.hasOwnProperty.call(raw, 'preset')) return DEFAULT_PLAYBACK_VISUAL_PRESET;
     // 先做合法范围归一化，再处理历史版本迁移。
@@ -755,7 +851,7 @@ function collectProtectedBeatMapKeys() {
   } catch (e) {}
   return keep;
 }
-// 收藏封面深度已迁移到 IndexedDB，无需内存保护裁剪。
+// 收藏封面深度缓存由宿主 SQLite 统一管理，内存侧不再持有，无需裁剪。
 // 通用对象缓存裁剪：保留 keep 个未保护项，返回实际删除数量。
 function trimObjectCache(cache, keep, protectedKeys, skipRecord) {
   // 空缓存或数量未超过上限时无需裁剪。
@@ -1099,7 +1195,7 @@ function readFreeCameraState() {
   var state = defaultFreeCameraState();
   try {
     // 存档结构可能来自旧版本，所有字段都逐项保护。
-    var raw = JSON.parse(localStorage.getItem(FREE_CAMERA_STORE_KEY) || '{}') || {};
+    var raw = (persistedStateSnapshot && persistedStateSnapshot.freeCamera) || {};
     if (raw.position) {
       // 位置限制在合理范围内，避免错误存档把相机丢到不可见区域。
       state.position.set(
@@ -1139,13 +1235,13 @@ var FREE_CAMERA_UP = new THREE.Vector3(0, 1, 0);
 var freeCameraPointer = { seen: false, x: 0, y: 0 };
 // 自由相机延迟保存计时器。
 var freeCameraDeferredSaveTimer = 0;
-// 保存自由相机状态到本地存储。
+// 保存自由相机状态到宿主数据库状态。
 function saveFreeCameraState() {
   // 状态未初始化时无需保存。
   if (!freeCamera) return;
   try {
     // 只保存可序列化的基础字段，Vector3 拆成普通对象。
-    localStorage.setItem(FREE_CAMERA_STORE_KEY, JSON.stringify({
+    saveStatePatch({ freeCamera: {
       locked: !!freeCamera.locked,
       active: !!freeCamera.active,
       position: { x: freeCamera.position.x, y: freeCamera.position.y, z: freeCamera.position.z },
@@ -1153,10 +1249,10 @@ function saveFreeCameraState() {
       pitch: freeCamera.pitch,
       roll: freeCamera.roll,
       fov: freeCamera.fov
-    }));
+    } });
   } catch (e) {}
 }
-// 延迟保存自由相机状态，避免拖拽或连续按键时频繁写 localStorage。
+// 延迟保存自由相机状态，避免拖拽或连续按键时频繁写数据库。
 function scheduleFreeCameraStateSave(delay) {
   // 已经有等待中的保存任务时不重复排队。
   if (freeCameraDeferredSaveTimer) return;
@@ -5587,13 +5683,11 @@ function normalizeSavedLyricFilterRegex(value) {
     return DEFAULT_LYRIC_FILTER_REGEX;
   }
 }
-// 从 localStorage 读取歌词布局和视觉配置。
+// 从宿主数据库状态读取歌词布局和视觉配置。
 function readSavedLyricLayout() {
   try {
-    // 读取原始 JSON 字符串。
-    var savedLayoutRaw = localStorage.getItem(LYRIC_LAYOUT_STORE_KEY);
     // 没有用户保存时使用打包默认布局。
-    var raw = savedLayoutRaw ? (JSON.parse(savedLayoutRaw) || {}) : packagedDefaultLyricLayoutRaw();
+    var raw = (persistedStateSnapshot && persistedStateSnapshot.lyricLayout) || packagedDefaultLyricLayoutRaw();
     // 读取并归一化视觉预设。
     var savedPreset = normalizeVisualPresetIndex(raw.preset, DEFAULT_PLAYBACK_VISUAL_PRESET);
     if (savedPreset === 3 && raw.visualPresetSchema !== VISUAL_PRESET_SCHEMA) {
@@ -5692,12 +5786,12 @@ function readSavedLyricLayout() {
     return {};
   }
 }
-// 保存当前歌词布局和视觉配置到 localStorage。
+// 保存当前歌词布局和视觉配置到宿主数据库状态。
 function saveLyricLayout() {
   try {
     // 保存前再次归一化预设索引，避免写入非法值。
     var presetForSave = normalizeVisualPresetIndex(fx.preset, DEFAULT_PLAYBACK_VISUAL_PRESET);
-    localStorage.setItem(LYRIC_LAYOUT_STORE_KEY, JSON.stringify({
+    saveStatePatch({ lyricLayout: {
       visualPresetSchema: VISUAL_PRESET_SCHEMA,
       preset: presetForSave,
       intensity: clampRange(Number(fx.intensity) || fxDefaults.intensity, 0.2, 1.6),
@@ -5746,8 +5840,8 @@ function saveLyricLayout() {
       backgroundOpacity: clampRange(fx.backgroundOpacity == null ? fxDefaults.backgroundOpacity : Number(fx.backgroundOpacity), 0, 1),
       controlGlassChromaticOffset: clampRange(fx.controlGlassChromaticOffset == null ? fxDefaults.controlGlassChromaticOffset : Number(fx.controlGlassChromaticOffset), 0, 140),
       backgroundColorCustom: fx.backgroundColorMode === 'custom' || !!fx.backgroundColorCustom,
-      backgroundImage: normalizeCustomBackgroundImage(fx.backgroundImage),
-      backgroundMedia: normalizeCustomBackgroundMedia(fx.backgroundMedia || fx.backgroundImage),
+      backgroundImage: '',
+      backgroundMedia: serializeCustomBackgroundMedia(fx.backgroundMedia || fx.backgroundImage),
       performanceBackground: normalizePerformanceBackgroundMode(fx.performanceBackground, fx.liveBackgroundKeep === true),
       performanceQuality: normalizePerformanceQuality(fx.performanceQuality),
       liveBackgroundKeep: normalizePerformanceBackgroundMode(fx.performanceBackground, fx.liveBackgroundKeep === true) === 'keep',
@@ -5766,7 +5860,7 @@ function saveLyricLayout() {
       shelfOpacity: clampRange(fx.shelfOpacity == null ? fxDefaults.shelfOpacity : Number(fx.shelfOpacity), 0.25, 1),
       shelfBgOpacity: clampRange(fx.shelfBgOpacity == null ? fxDefaults.shelfBgOpacity : Number(fx.shelfBgOpacity), 0.25, 0.98),
       shelfAccentColor: normalizeHexColor(fx.shelfAccentColor || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor)
-    }));
+    } });
   } catch (e) {}
 }
 // 归一化十六进制颜色，支持 #rgb 展开。
@@ -5959,11 +6053,11 @@ function hexToRgb(hex) {
 }
 // 归一化自定义背景图片来源。
 function normalizeCustomBackgroundImage(value) {
-  // 仅接受 data URL 图片或 http(s) 地址。
+  // 仅保留旧存档或宿主解析后的可访问 URL。
   var src = String(value || '').trim();
   if (!src) return '';
   if (/^data:image\/(png|jpe?g|webp);base64,/i.test(src)) return src;
-  if (/^https?:\/\//i.test(src)) return src;
+  if (/^(https?|file|blob):\/\//i.test(src)) return src;
   return '';
 }
 // 归一化自定义背景媒体，兼容旧字符串字段和新对象字段。
@@ -5974,7 +6068,7 @@ function normalizeCustomBackgroundMedia(value) {
     // 字符串先尝试作为图片处理。
     var img = normalizeCustomBackgroundImage(value);
     if (img) return { type: 'image', src: img };
-    if (/^data:video\/(mp4|webm|quicktime);base64,/i.test(value) || /^https?:\/\//i.test(value)) return { type: 'video', src: String(value) };
+    if (/^data:video\/(mp4|webm|quicktime);base64,/i.test(value) || /^(https?|file|blob):\/\//i.test(value)) return { type: 'video', src: String(value) };
     return null;
   }
   // 非对象无法表达媒体元数据。
@@ -5982,130 +6076,109 @@ function normalizeCustomBackgroundMedia(value) {
   // 只接受图片和视频两类。
   var type = value.type === 'video' ? 'video' : (value.type === 'image' ? 'image' : '');
   if (type === 'image') {
-    // 图片对象同样只保留合法来源。
-    var imageSrc = normalizeCustomBackgroundImage(value.src || value.url || '');
-    return imageSrc ? { type: 'image', src: imageSrc } : null;
-  }
-  if (type === 'video') {
-    // 视频可以通过 IndexedDB id 或 data/http(s) src 引用。
-    var src = String(value.src || '').trim();
-    // IndexedDB 中保存的视频对象 ID。
-    var id = String(value.id || '').trim();
-    if (!id && !/^data:video\/(mp4|webm|quicktime);base64,/i.test(src) && !/^https?:\/\//i.test(src)) return null;
+    // 新存档只需要路径；src/resolvedUrl 仅作为运行时 URL 或旧存档兼容。
+    var imagePath = String(value.path || '').trim();
+    var imageSrc = normalizeCustomBackgroundImage(value.resolvedUrl || value.src || value.url || '');
+    if (!imagePath && !imageSrc) return null;
     return {
-      type: 'video',
-      id: id,
-      src: src,
+      type: 'image',
+      path: imagePath,
+      src: imageSrc,
+      resolvedUrl: imageSrc,
       name: String(value.name || '').slice(0, 120),
       mime: String(value.mime || '').slice(0, 80),
-      size: Math.max(0, Number(value.size) || 0)
+      size: Math.max(0, Number(value.size) || 0),
+      modifiedAt: Number(value.modifiedAt || 0) || 0
+    };
+  }
+  if (type === 'video') {
+    // 新存档只需要路径；src/resolvedUrl 仅作为运行时 URL 或旧存档兼容。
+    var videoPath = String(value.path || '').trim();
+    var src = String(value.resolvedUrl || value.src || value.url || '').trim();
+    if (!videoPath && !/^data:video\/(mp4|webm|quicktime);base64,/i.test(src) && !/^(https?|file|blob):\/\//i.test(src)) return null;
+    return {
+      type: 'video',
+      path: videoPath,
+      src: src,
+      resolvedUrl: src,
+      name: String(value.name || '').slice(0, 120),
+      mime: String(value.mime || '').slice(0, 80),
+      size: Math.max(0, Number(value.size) || 0),
+      modifiedAt: Number(value.modifiedAt || 0) || 0
     };
   }
   return null;
+}
+// 序列化背景媒体到数据库，只保留真实文件路径元数据。
+function serializeCustomBackgroundMedia(media) {
+  media = normalizeCustomBackgroundMedia(media);
+  if (!media || !media.path) return null;
+  return {
+    type: media.type,
+    path: media.path,
+    name: String(media.name || '').slice(0, 120),
+    mime: String(media.mime || '').slice(0, 80),
+    size: Math.max(0, Number(media.size) || 0),
+    modifiedAt: Number(media.modifiedAt || 0) || 0
+  };
 }
 // 返回自定义背景媒体在 UI 上的简短状态文本。
 function customBackgroundMediaLabel(media) {
   // 先归一化，避免展示无效媒体。
   media = normalizeCustomBackgroundMedia(media);
   if (!media) return '未设置';
-  return media.type === 'video' ? '视频已设置' : '图片已设置';
+  return media.name || (media.type === 'video' ? '视频已设置' : '图片已设置');
 }
-// 自定义背景 IndexedDB 数据库名。
-var CUSTOM_BG_DB_NAME = 'mineradio-custom-background-v1';
-// 自定义背景 IndexedDB 对象仓库名。
-var CUSTOM_BG_STORE = 'media';
-// 当前自定义背景对象 URL，替换媒体时需要回收。
-var customBgObjectUrl = '';
 // 自定义背景应用 token，用于异步加载防串。
 var customBgApplyToken = 0;
-// 打开自定义背景 IndexedDB。
-function openCustomBackgroundDb() {
-  return new Promise(function(resolve, reject){
-    // 浏览器不支持 IndexedDB 时直接拒绝。
-    if (!window.indexedDB) { reject(new Error('indexedDB unavailable')); return; }
-    // 当前数据库版本为 1。
-    var req = indexedDB.open(CUSTOM_BG_DB_NAME, 1);
-    req.onupgradeneeded = function(){
-      // 首次创建数据库时建立 media 仓库。
-      var db = req.result;
-      if (!db.objectStoreNames.contains(CUSTOM_BG_STORE)) db.createObjectStore(CUSTOM_BG_STORE, { keyPath: 'id' });
-    };
-    req.onsuccess = function(){ resolve(req.result); };
-    req.onerror = function(){ reject(req.error || new Error('indexedDB open failed')); };
-  });
+// 请求父层解析背景媒体路径。
+async function resolveCustomBackgroundMedia(media) {
+  media = normalizeCustomBackgroundMedia(media);
+  if (!media || !media.path) return media;
+  try {
+    var result = await requestHostBridge('echo-player-frontend:background-resolve', { media: serializeCustomBackgroundMedia(media) });
+    media.resolvedUrl = String(result.url || '');
+    media.src = media.resolvedUrl;
+  } catch (e) {
+    showToast('背景媒体文件不可访问');
+    console.warn('[背景媒体] 路径解析失败', e);
+  }
+  return media;
 }
-// 将自定义背景 Blob 写入 IndexedDB。
-async function putCustomBackgroundBlob(id, blob, meta) {
-  // 先打开数据库连接。
-  var db = await openCustomBackgroundDb();
-  return new Promise(function(resolve, reject){
-    // 写入需要 readwrite 事务。
-    var tx = db.transaction(CUSTOM_BG_STORE, 'readwrite');
-    tx.objectStore(CUSTOM_BG_STORE).put(Object.assign({ id: id, blob: blob, savedAt: Date.now() }, meta || {}));
-    tx.oncomplete = function(){ db.close(); resolve(); };
-    tx.onerror = function(){ db.close(); reject(tx.error || new Error('indexedDB put failed')); };
-  });
+// 打开宿主文件选择器选择背景媒体。
+async function selectCustomBackgroundMedia() {
+  try {
+    var result = await requestHostBridge('echo-player-frontend:background-select', {});
+    if (result.canceled) return;
+    var media = normalizeCustomBackgroundMedia(Object.assign({}, result.media || {}, { resolvedUrl: result.url, src: result.url }));
+    if (!media) {
+      showToast('请选择图片或视频文件');
+      return;
+    }
+    setCustomBackgroundMedia(media);
+  } catch (e) {
+    showToast(e && e.message ? e.message : '背景媒体选择失败');
+  }
 }
-// 根据 id 从 IndexedDB 读取自定义背景 Blob。
-async function getCustomBackgroundBlob(id) {
-  // 先打开数据库连接。
-  var db = await openCustomBackgroundDb();
-  return new Promise(function(resolve, reject){
-    // 读取使用 readonly 事务。
-    var tx = db.transaction(CUSTOM_BG_STORE, 'readonly');
-    // 获取指定媒体记录。
-    var req = tx.objectStore(CUSTOM_BG_STORE).get(id);
-    req.onsuccess = function(){ resolve(req.result && req.result.blob ? req.result.blob : null); };
-    req.onerror = function(){ reject(req.error || new Error('indexedDB get failed')); };
-    tx.oncomplete = function(){ db.close(); };
-  });
-}
-// 封面深度缓存 IndexedDB 配置。
-var DEPTH_DB_NAME = 'echo-player-depths';
-var DEPTH_STORE = 'depths';
-// 打开深度缓存 IndexedDB。
-function openDepthDB() {
-  return new Promise(function(resolve, reject){
-    if (!window.indexedDB) { reject(new Error('indexedDB unavailable')); return; }
-    var req = indexedDB.open(DEPTH_DB_NAME, 1);
-    req.onupgradeneeded = function(){
-      var db = req.result;
-      if (!db.objectStoreNames.contains(DEPTH_STORE)) db.createObjectStore(DEPTH_STORE, { keyPath: 'hash' });
-    };
-    req.onsuccess = function(){ resolve(req.result); };
-    req.onerror = function(){ reject(req.error || new Error('indexedDB open failed')); };
-  });
-}
-// 从 IndexedDB 读取指定 hash 的深度缓存。
-async function getDepthFromIDB(hash) {
+// 从插件数据库读取指定 hash 的深度缓存。
+async function getDepthFromStorage(hash) {
   if (!hash) return null;
   try {
-    var db = await openDepthDB();
-    return new Promise(function(resolve, reject){
-      var tx = db.transaction(DEPTH_STORE, 'readonly');
-      var req = tx.objectStore(DEPTH_STORE).get(hash);
-      req.onsuccess = function(){ resolve(req.result || null); };
-      req.onerror = function(){ reject(req.error); };
-      tx.oncomplete = function(){ db.close(); };
-    });
+    return await hostStorageGet(EPF_DEPTH_STORE_PREFIX + hash);
   } catch (e) {
-    console.warn('[深度缓存] IDB 读取失败', e);
+    console.warn('[深度缓存] 数据库读取失败', e);
     return null;
   }
 }
-// 将深度缓存写入 IndexedDB（所有写入均为 AI 深度，标记 ai: true）。
-async function putDepthToIDB(hash, dataUrl, width, height) {
+// 将深度缓存写入插件数据库，永久保留，不做自动清理。
+async function putDepthToStorage(hash, dataUrl, width, height, format) {
   if (!hash || !dataUrl) return;
   try {
-    var db = await openDepthDB();
-    return new Promise(function(resolve, reject){
-      var tx = db.transaction(DEPTH_STORE, 'readwrite');
-      tx.objectStore(DEPTH_STORE).put({ hash: hash, dataUrl: dataUrl, width: width, height: height, ai: true, timestamp: Date.now() });
-      tx.oncomplete = function(){ db.close(); resolve(); };
-      tx.onerror = function(){ db.close(); reject(tx.error); };
-    });
+    var payload = { hash: hash, dataUrl: dataUrl, width: width, height: height, ai: true, timestamp: Date.now() };
+    if (format) payload.format = format;
+    await hostStorageSet(EPF_DEPTH_STORE_PREFIX + hash, payload);
   } catch (e) {
-    console.warn('[深度缓存] IDB 写入失败', e);
+    console.warn('[深度缓存] 数据库写入失败', e);
   }
 }
 // 颜色实验室弹层的运行状态。
@@ -7963,7 +8036,7 @@ function buildEdgeAndDepth(srcCanvas) {
   var normalized = document.createElement('canvas');
   normalized.width = W;
   normalized.height = H;
-  var sctx = normalized.getContext('2d');
+  var sctx = normalized.getContext('2d', { willReadFrequently: true });
   sctx.drawImage(srcCanvas, 0, 0, W, H);
   // 读取规整后的像素。
   var src = sctx.getImageData(0, 0, W, H).data;
@@ -8036,7 +8109,7 @@ function buildEdgeAndDepth(srcCanvas) {
   // 输出 256×256 RGBA
   // 创建输出 canvas 和 ImageData。
   var out = document.createElement('canvas'); out.width = W; out.height = H;
-  var octx = out.getContext('2d'), imgOut = octx.createImageData(W, H);
+  var octx = out.getContext('2d', { willReadFrequently: true }), imgOut = octx.createImageData(W, H);
   for (var i = 0; i < N; i++) {
     var di = i * 4;
     imgOut.data[di]   = Math.round(depth[i] * 255);
@@ -8158,7 +8231,7 @@ function depthDataUrlToCanvas(dataUrl) {
   });
 }
 
-// 请求云端深度服务，hash 固定使用本地 IndexedDB 深度缓存同一个 key。
+// 请求云端深度服务，hash 固定使用宿主 SQLite 深度缓存同一个 key。
 async function fetchCloudAIDepth(hash, token) {
   if (!isCloudAIDepthMode()) return null;
   hash = String(hash || '').trim();
@@ -8202,12 +8275,12 @@ function mergeAIDepthIntoEdgeTexture(heuristicCanvas, aiCanvas) {
   // 输出纹理尺寸。
   var W = heuristicCanvas.width || 256, H = heuristicCanvas.height || 256;
   // 读取启发式纹理。
-  var hctx = heuristicCanvas.getContext('2d');
+  var hctx = heuristicCanvas.getContext('2d', { willReadFrequently: true });
   var hImg = hctx.getImageData(0, 0, W, H);
 
   // 把 AI 深度图缩放到启发式纹理尺寸。
   var aiTmp = document.createElement('canvas'); aiTmp.width = W; aiTmp.height = H;
-  var actx = aiTmp.getContext('2d');
+  var actx = aiTmp.getContext('2d', { willReadFrequently: true });
   actx.drawImage(aiCanvas, 0, 0, W, H);
   var aData = actx.getImageData(0, 0, W, H).data;
 
@@ -8243,12 +8316,64 @@ function mergeAIDepthIntoEdgeTexture(heuristicCanvas, aiCanvas) {
   return heuristicCanvas;
 }
 
+// 判断辅助纹理是否足够大，防止初始化 4×4 占位图进入深度缓存链路。
+function isUsableDepthAuxCanvas(canvas) {
+  return !!canvas &&
+    (canvas.width || 0) >= EPF_MIN_DEPTH_CACHE_SIZE &&
+    (canvas.height || 0) >= EPF_MIN_DEPTH_CACHE_SIZE;
+}
+
+// 从合并后的辅助纹理导出安全缓存图：RGB 全部写深度，A 固定不透明。
+function buildOpaqueDepthCacheCanvas(edgeCanvas) {
+  if (!isUsableDepthAuxCanvas(edgeCanvas)) return null;
+  var W = edgeCanvas.width, H = edgeCanvas.height;
+  var srcCtx = edgeCanvas.getContext('2d', { willReadFrequently: true });
+  var srcImg = srcCtx.getImageData(0, 0, W, H);
+  var out = document.createElement('canvas');
+  out.width = W;
+  out.height = H;
+  var outCtx = out.getContext('2d');
+  var outImg = outCtx.createImageData(W, H);
+  for (var i = 0; i < W * H; i++) {
+    var di = i * 4;
+    var depth = srcImg.data[di];
+    outImg.data[di] = depth;
+    outImg.data[di + 1] = depth;
+    outImg.data[di + 2] = depth;
+    outImg.data[di + 3] = 255;
+  }
+  outCtx.putImageData(outImg, 0, 0);
+  return out;
+}
+
+// 把新版缓存中的灰度深度合回当前封面的辅助纹理，只替换 R 通道。
+function mergeCachedDepthIntoEdgeTexture(heuristicCanvas, depthCanvas) {
+  if (!heuristicCanvas || !depthCanvas) return heuristicCanvas;
+  var W = heuristicCanvas.width || 256, H = heuristicCanvas.height || 256;
+  var hctx = heuristicCanvas.getContext('2d', { willReadFrequently: true });
+  var hImg = hctx.getImageData(0, 0, W, H);
+  var depthTmp = document.createElement('canvas');
+  depthTmp.width = W;
+  depthTmp.height = H;
+  var dctx = depthTmp.getContext('2d', { willReadFrequently: true });
+  dctx.drawImage(depthCanvas, 0, 0, W, H);
+  var dData = dctx.getImageData(0, 0, W, H).data;
+  for (var i = 0; i < W * H; i++) {
+    var di = i * 4;
+    hImg.data[di] = Math.round(dData[di] * 0.299 + dData[di + 1] * 0.587 + dData[di + 2] * 0.114);
+  }
+  hctx.putImageData(hImg, 0, 0);
+  return heuristicCanvas;
+}
+
 function queueAIDepthForCover(srcCanvas, edgeCanvas, token, opts, cacheSeed, force) {
   // AI 增强排到空闲时段执行，并在每个等待点检查 token 和封面来源，避免后台任务抢占交互帧。
   opts = opts || {};
   var mode = normalizeAIDepthMode(fx.aiDepthMode);
   // 缺少开关或输入时不排队。
   if (mode === 'off' || !srcCanvas || !edgeCanvas) return;
+  // 拒绝 4×4 初始化占位图，避免生成低分辨率深度缓存。
+  if (!isUsableDepthAuxCanvas(edgeCanvas)) return;
   // 云端模式必须配置基础地址，并且 hash 固定来自当前本地深度缓存 key。
   if (mode === 'cloud' && (!normalizeAIDepthCloudApi(fx.aiDepthCloudApi) || !coverDepthCacheId(cacheSeed))) return;
   // 后台优化释放资源时不启动非强制 AI 任务。
@@ -8270,13 +8395,16 @@ function queueAIDepthForCover(srcCanvas, edgeCanvas, token, opts, cacheSeed, for
     mergeAIDepthIntoEdgeTexture(edgeCanvas, aiCanvas);
     coverEdgeTex.image = edgeCanvas;
     coverEdgeTex.needsUpdate = true;
+    currentCoverEdgeCacheSeed = cacheSeed;
     // 更新深度状态和缓存。
     setCoverDepthState(1, 1.0, 360);
     (async function(){
       var hash = coverDepthCacheId(cacheSeed);
-      var dataUrl = edgeCanvas.toDataURL();
-      console.log('[深度缓存] 写入 AI 深度:', { hash: hash, id: cacheSeed, width: edgeCanvas.width, height: edgeCanvas.height, dataUrl: dataUrl, timestamp: Date.now() });
-      await putDepthToIDB(hash, dataUrl, edgeCanvas.width, edgeCanvas.height);
+      var cacheCanvas = buildOpaqueDepthCacheCanvas(edgeCanvas);
+      if (!cacheCanvas) return;
+      var dataUrl = cacheCanvas.toDataURL('image/png');
+      console.log('[深度缓存] 写入 AI 深度:', { hash: hash, id: cacheSeed, width: cacheCanvas.width, height: cacheCanvas.height, format: EPF_DEPTH_CACHE_FORMAT, dataUrl: dataUrl, timestamp: Date.now() });
+      await putDepthToStorage(hash, dataUrl, cacheCanvas.width, cacheCanvas.height, EPF_DEPTH_CACHE_FORMAT);
     })();
     showToast(mode === 'cloud' ? '云端深度已后台增强' : 'AI 深度已后台增强');
   }, force ? 240 : 1800, force ? 1200 : 3000);
@@ -8287,7 +8415,21 @@ function queueAIDepthForCurrentCover(force) {
   // 当前封面或深度纹理不可用时跳过。
   if (!coverTex || !coverTex.image || !coverEdgeTex || !coverEdgeTex.image) return;
   if (!uniforms.uHasCover.value) return;
-  queueAIDepthForCover(coverTex.image, coverEdgeTex.image, coverProcessToken, {}, currentCoverDepthCacheSeed, !!force);
+  if (!currentCoverDepthCacheSeed) return;
+  var edgeCanvas = coverEdgeTex.image;
+  if (!isUsableDepthAuxCanvas(edgeCanvas) || currentCoverEdgeCacheSeed !== currentCoverDepthCacheSeed) {
+    try {
+      edgeCanvas = buildEdgeAndDepth(coverTex.image);
+      coverEdgeTex.image = edgeCanvas;
+      coverEdgeTex.needsUpdate = true;
+      currentCoverEdgeCacheSeed = currentCoverDepthCacheSeed;
+    } catch (e) {
+      console.warn('[深度缓存] 当前封面辅助纹理重建失败', e);
+      return;
+    }
+  }
+  if (!isUsableDepthAuxCanvas(edgeCanvas)) return;
+  queueAIDepthForCover(coverTex.image, edgeCanvas, coverProcessToken, {}, currentCoverDepthCacheSeed, !!force);
 }
 
 // 颜色渐变 tween (切歌时旧封面→新封面)
@@ -8590,6 +8732,7 @@ function applyCoverCanvas(cv, thumbSrc, opts) {
   }
   var cacheSeed = (opts.coverKey || thumbSrc || '') + '|tex=' + (cv.width || 0) + 'x' + (cv.height || 0);
   currentCoverDepthCacheSeed = cacheSeed;
+  currentCoverEdgeCacheSeed = '';
 
   if (uniforms.uHasCover.value > 0.5 && coverTex.image) {
     var prevW = coverTex.image.width || 256;
@@ -8635,31 +8778,61 @@ function applyCoverCanvas(cv, thumbSrc, opts) {
     var edgeCv = buildEdgeAndDepth(cv);
     if (token !== coverProcessToken || !coverApplyStillCurrent(opts)) return;
     coverEdgeTex.image = edgeCv; coverEdgeTex.needsUpdate = true;
+    currentCoverEdgeCacheSeed = cacheSeed;
     refreshCoverDependentColors();
     queueAIDepthForCover(cv, edgeCv, token, opts, cacheSeed, false);
   }
 
-  // 从 IndexedDB 异步加载深度缓存；关闭模式不读取 AI 深度缓存。
+  // 从插件数据库异步加载深度缓存；关闭模式不读取 AI 深度缓存。
   if (isAIDepthEnabled()) {
     var depthCacheMode = normalizeAIDepthMode(fx.aiDepthMode);
+    var scheduleDepthCacheFallback = function() {
+      var heavyDelay = opts.deferHeavy ? (opts.delay || 620) : (opts.delay || 120)
+      var heavyTimeout = opts.deferHeavy ? (opts.timeout || 1800) : (opts.timeout || 900)
+      scheduleVisualApply(runHeavyCoverWork, heavyDelay, heavyTimeout)
+    };
     (async function(){
       var hash = coverDepthCacheId(cacheSeed)
-      var cachedDepth = await getDepthFromIDB(hash)
+      var cachedDepth = await getDepthFromStorage(hash)
       if (normalizeAIDepthMode(fx.aiDepthMode) !== depthCacheMode) {
-        var fallbackDelay = opts.deferHeavy ? (opts.delay || 620) : (opts.delay || 120)
-        var fallbackTimeout = opts.deferHeavy ? (opts.timeout || 1800) : (opts.timeout || 900)
-        scheduleVisualApply(runHeavyCoverWork, fallbackDelay, fallbackTimeout)
+        scheduleDepthCacheFallback()
         return
       }
       if (token !== coverProcessToken || !coverApplyStillCurrent(opts)) return
       if (cachedDepth && cachedDepth.dataUrl && cachedDepth.width && cachedDepth.height) {
+        if (cachedDepth.format === EPF_DEPTH_CACHE_FORMAT) {
+          var depthCv = await depthDataUrlToCanvas(cachedDepth.dataUrl)
+          if (normalizeAIDepthMode(fx.aiDepthMode) !== depthCacheMode) {
+            scheduleDepthCacheFallback()
+            return
+          }
+          if (token !== coverProcessToken || !coverApplyStillCurrent(opts)) return
+          if (!depthCv) {
+            scheduleDepthCacheFallback()
+            return
+          }
+          var mergedEdgeCv = null
+          try {
+            mergedEdgeCv = buildEdgeAndDepth(cv)
+            mergeCachedDepthIntoEdgeTexture(mergedEdgeCv, depthCv)
+          } catch (e) {
+            console.warn('[深度缓存] 新格式读取失败', e)
+            scheduleDepthCacheFallback()
+            return
+          }
+          if (token !== coverProcessToken || !coverApplyStillCurrent(opts)) return
+          coverEdgeTex.image = mergedEdgeCv
+          coverEdgeTex.needsUpdate = true
+          currentCoverEdgeCacheSeed = cacheSeed
+          setCoverDepthState(1, 1.0, opts.deferHeavy ? 180 : 120)
+          scheduleVisualApply(refreshCoverDependentColors, opts.deferHeavy ? 260 : 90, opts.deferHeavy ? 1200 : 700)
+          return
+        }
         var img = new Image()
         img.src = cachedDepth.dataUrl
         await new Promise(function(resolve){ img.onload = resolve; img.onerror = resolve })
         if (normalizeAIDepthMode(fx.aiDepthMode) !== depthCacheMode) {
-          var fallbackDelay2 = opts.deferHeavy ? (opts.delay || 620) : (opts.delay || 120)
-          var fallbackTimeout2 = opts.deferHeavy ? (opts.timeout || 1800) : (opts.timeout || 900)
-          scheduleVisualApply(runHeavyCoverWork, fallbackDelay2, fallbackTimeout2)
+          scheduleDepthCacheFallback()
           return
         }
         if (token !== coverProcessToken || !coverApplyStillCurrent(opts)) return
@@ -8669,14 +8842,13 @@ function applyCoverCanvas(cv, thumbSrc, opts) {
         edgeCv.getContext('2d').drawImage(img, 0, 0)
         coverEdgeTex.image = edgeCv
         coverEdgeTex.needsUpdate = true
-        // 所有 IDB 条目均为 AI 深度，直接激活立体效果。
+        currentCoverEdgeCacheSeed = cacheSeed
+        // 数据库深度条目均为 AI 深度，直接激活立体效果。
         setCoverDepthState(1, 1.0, opts.deferHeavy ? 180 : 120)
         scheduleVisualApply(refreshCoverDependentColors, opts.deferHeavy ? 260 : 90, opts.deferHeavy ? 1200 : 700)
         return
       }
-      var heavyDelay = opts.deferHeavy ? (opts.delay || 620) : (opts.delay || 120)
-      var heavyTimeout = opts.deferHeavy ? (opts.timeout || 1800) : (opts.timeout || 900)
-      scheduleVisualApply(runHeavyCoverWork, heavyDelay, heavyTimeout)
+      scheduleDepthCacheFallback()
     })().catch(function(e){ console.warn('[深度缓存] 异步加载失败', e) })
   } else {
     var heavyDelay = opts.deferHeavy ? (opts.delay || 620) : (opts.delay || 120)
@@ -8874,6 +9046,7 @@ function loadCoverFromUrl(directUrl, opts) {
     // 清除当前封面来源记录。
     currentCoverSource = null;
     currentCoverDepthCacheSeed = '';
+    currentCoverEdgeCacheSeed = '';
     // 递增封面处理 token，让旧异步任务失效。
     coverProcessToken++;
     // 关闭封面和深度状态。
@@ -8897,6 +9070,7 @@ function loadCoverFromUrl(directUrl, opts) {
     // 没有可用代理时关闭封面纹理，只保留背景图降级。
     uniforms.uHasCover.value = 0; setCoverDepthState(0, 0, 1);
     currentCoverDepthCacheSeed = '';
+    currentCoverEdgeCacheSeed = '';
     resetFloatColorsToIdle();
     setControlCoverSrc('');
     return;
@@ -8937,6 +9111,7 @@ function loadCoverFromUrl(directUrl, opts) {
       if (!coverApplyStillCurrent(opts)) return;
       currentCoverSource = null;
       currentCoverDepthCacheSeed = '';
+      currentCoverEdgeCacheSeed = '';
       uniforms.uHasCover.value = 0; setCoverDepthState(0, 0, 1);
       resetFloatColorsToIdle();
       setControlCoverSrc('');
@@ -11975,6 +12150,7 @@ function setVolume(value, silent) {
   applyVolumeToAudio();
   updateVolumeUi();
   sendEchoHostCommand('volume', { value: next });
+  saveStatePatch({ volume: next });
   if (!silent) showToast('音量 ' + Math.round(next * 100) + '%');
 }
 // 通过键盘快捷键按步进调整音量。
@@ -13052,8 +13228,8 @@ var lyricColorPresets = [
   { name:'酒红', color:'#6d1f35' },
   { name:'墨黑', color:'#111318' },
 ];
-// 用户视觉存档 localStorage key。
-var USER_FX_ARCHIVE_STORE_KEY = 'mineradio-user-fx-archives-v1';
+// 用户视觉存档数据库键。
+var USER_FX_ARCHIVE_STORE_KEY = EPF_USER_FX_ARCHIVE_STORE_KEY;
 // 用户视觉存档导出文件类型标记。
 var USER_FX_ARCHIVE_EXPORT_TYPE = 'mineradio-user-fx-archive';
 // 用户视觉存档结构版本。
@@ -13161,15 +13337,10 @@ function normalizeFxArchiveSnapshot(raw) {
     shelfAccentColor: normalizeHexColor(raw.shelfAccentColor || fxDefaults.shelfAccentColor, fxDefaults.shelfAccentColor)
   };
 }
-// 从 localStorage 读取用户视觉存档列表。
+// 从宿主数据库快照读取用户视觉存档列表。
 function readUserFxArchives() {
   // 原始存档数组。
-  var raw = [];
-  try {
-    raw = JSON.parse(localStorage.getItem(USER_FX_ARCHIVE_STORE_KEY) || '[]') || [];
-  } catch (e) {
-    raw = [];
-  }
+  var raw = Array.isArray(persistedUserFxArchivesRaw) ? persistedUserFxArchivesRaw : [];
   if (!Array.isArray(raw)) raw = [];
   return raw.map(function(slot, index){
     // 单个存档槽原始对象。
@@ -13187,21 +13358,17 @@ function readUserFxArchives() {
     return !!(slot.snapshot || slot.savedAt || slot.createdAt);
   });
 }
-// 保存用户视觉存档列表到 localStorage。
+// 保存用户视觉存档列表到宿主数据库。
 function saveUserFxArchives() {
-  try {
-    localStorage.setItem(USER_FX_ARCHIVE_STORE_KEY, JSON.stringify(userFxArchives));
-  } catch (e) {
-    showToast('用户存档保存失败，本地存储空间可能不足');
-  }
+  if (!hostUserFxArchivesLoaded) return;
+  persistedUserFxArchivesRaw = userFxArchives.slice();
+  hostStorageSet(USER_FX_ARCHIVE_STORE_KEY, userFxArchives).catch(function(){
+    showToast('用户存档保存失败，插件数据库可能不可用');
+  });
 }
 // 判断本机是否已经存在用户视觉存档。
 function hasStoredUserFxArchives() {
-  try {
-    return localStorage.getItem(USER_FX_ARCHIVE_STORE_KEY) != null;
-  } catch (e) {
-    return true;
-  }
+  return Array.isArray(persistedUserFxArchivesRaw);
 }
 // 从打包默认快照创建初始用户存档槽。
 function createPackagedDefaultUserFxArchiveSlot() {
@@ -13276,14 +13443,11 @@ function applyFxArchiveSnapshot(snapshot) {
   saveLyricLayout();
   return true;
 }
-// 启动时是否已经存在用户存档。
-var hadStoredUserFxArchives = hasStoredUserFxArchives();
 // 当前用户视觉存档列表。
 var userFxArchives = readUserFxArchives();
-if (!hadStoredUserFxArchives) {
-  // 首次启动时写入打包默认用户存档。
+if (!userFxArchives.length) {
+  // 数据库尚未返回或首次启动时先显示打包默认用户存档。
   userFxArchives = [createPackagedDefaultUserFxArchiveSlot()];
-  saveUserFxArchives();
 }
 // 当前正在编辑名称的用户存档索引。
 var userFxArchiveEditing = -1;
@@ -13763,7 +13927,7 @@ function applyCustomBackground() {
   // 归一化后的背景媒体。
   var media = normalizeCustomBackgroundMedia(fx.backgroundMedia || fx.backgroundImage);
   // 背景图片地址。
-  var image = media && media.type === 'image' ? media.src : '';
+  var image = media && media.type === 'image' ? (media.resolvedUrl || media.src || '') : '';
   // 是否为背景视频。
   var hasVideo = !!(media && media.type === 'video');
   // 背景媒体透明度。
@@ -13791,20 +13955,25 @@ function applyCustomBackground() {
   }
   // 背景视频应用 token，防止异步 blob 结果串写。
   var token = ++customBgApplyToken;
+  if (media && media.path && !media.resolvedUrl && !media.src) {
+    resolveCustomBackgroundMedia(media).then(function(resolved){
+      if (token !== customBgApplyToken || !resolved || !resolved.resolvedUrl) return;
+      fx.backgroundMedia = resolved;
+      if (resolved.type === 'image') fx.backgroundImage = resolved.resolvedUrl;
+      applyCustomBackground();
+    });
+  }
   if (!video) return;
   if (!hasVideo) {
     // 没有视频时停止并清理 video 节点。
     video.pause();
     video.removeAttribute('src');
     video.load();
-    if (customBgObjectUrl) { URL.revokeObjectURL(customBgObjectUrl); customBgObjectUrl = ''; }
     return;
   }
   // 设置背景视频 src 并尝试播放。
   function setVideoSrc(src) {
     if (token !== customBgApplyToken || !src) return;
-    // 如果旧 objectURL 不再使用则释放。
-    if (customBgObjectUrl && customBgObjectUrl !== src) { URL.revokeObjectURL(customBgObjectUrl); customBgObjectUrl = ''; }
     if (video.getAttribute('src') !== src) {
       video.setAttribute('src', src);
       video.load();
@@ -13815,18 +13984,7 @@ function applyCustomBackground() {
     var p = video.play();
     if (p && p.catch) p.catch(function(){});
   }
-  if (media.src) {
-    // dataURL 或普通 URL 视频直接应用。
-    setVideoSrc(media.src);
-  } else if (media.id) {
-    // IndexedDB 中的视频 blob 需要异步取出并转为 objectURL。
-    getCustomBackgroundBlob(media.id).then(function(blob){
-      if (token !== customBgApplyToken || !blob) return;
-      if (customBgObjectUrl) URL.revokeObjectURL(customBgObjectUrl);
-      customBgObjectUrl = URL.createObjectURL(blob);
-      setVideoSrc(customBgObjectUrl);
-    }).catch(function(err){ console.warn('background video load failed:', err); });
-  }
+  setVideoSrc(media.resolvedUrl || media.src || '');
 }
 // 刷新自定义背景相关控件。
 function updateCustomBackgroundControls() {
@@ -13906,83 +14064,10 @@ function setCustomBackgroundMedia(media, silent) {
   saveLyricLayout();
   if (!silent) showToast(media ? (media.type === 'video' ? '背景视频已应用' : '背景图片已应用') : '背景媒体已清除');
 }
-// 读取本地图片文件并压缩为背景图片 dataURL。
-function readBackgroundImageFile(file) {
-  if (!file || !/^image\//i.test(file.type || '')) {
-    showToast('请选择图片文件');
-    return;
-  }
-  // 图片文件读取器。
-  var reader = new FileReader();
-  reader.onload = function(e) {
-    // 临时图片对象，用于解码和缩放。
-    var img = new Image();
-    img.onload = function() {
-      // 背景图最长边限制。
-      var maxSide = 2200;
-      // 原图宽度。
-      var iw = img.naturalWidth || img.width || 1;
-      // 原图高度。
-      var ih = img.naturalHeight || img.height || 1;
-      // 缩放比例。
-      var scale = Math.min(1, maxSide / Math.max(iw, ih));
-      // 输出宽度。
-      var w = Math.max(1, Math.round(iw * scale));
-      // 输出高度。
-      var h = Math.max(1, Math.round(ih * scale));
-      // 输出 canvas。
-      var cv = document.createElement('canvas');
-      cv.width = w; cv.height = h;
-      // 输出绘制上下文。
-      var cx = cv.getContext('2d');
-      cx.drawImage(img, 0, 0, w, h);
-      // 优先导出 webp。
-      var out = '';
-      try { out = cv.toDataURL('image/webp', 0.84); } catch (err) {}
-      if (!/^data:image\/webp/i.test(out)) {
-        // 不支持 webp 时降级为 jpeg，最后兜底原始 dataURL。
-        try { out = cv.toDataURL('image/jpeg', 0.86); } catch (err2) { out = String(e.target.result || ''); }
-      }
-      setCustomBackgroundImage(out);
-    };
-    img.onerror = function(){ showToast('背景图片读取失败'); };
-    img.src = e.target.result;
-  };
-  reader.onerror = function(){ showToast('背景图片读取失败'); };
-  reader.readAsDataURL(file);
-}
-// 读取本地视频文件并保存为背景视频。
-function readBackgroundVideoFile(file) {
-  if (!file || !/^video\//i.test(file.type || '')) {
-    showToast('请选择视频文件');
-    return;
-  }
-  // 背景视频 blob 存储 id。
-  var id = 'bg-video-' + Date.now() + '-' + Math.random().toString(16).slice(2);
-  putCustomBackgroundBlob(id, file, { name: file.name || '', mime: file.type || '', size: file.size || 0 }).then(function(){
-    setCustomBackgroundMedia({ type: 'video', id: id, name: file.name || '', mime: file.type || '', size: file.size || 0 });
-  }).catch(function(err){
-    console.warn('background video store failed:', err);
-    if ((file.size || 0) > 18 * 1024 * 1024) {
-      // 大视频不再转 dataURL，避免本地存储和内存压力过大。
-      showToast('视频较大，当前环境无法保存，请换小一点的视频');
-      return;
-    }
-    // IndexedDB 失败时，小视频降级为 dataURL。
-    var reader = new FileReader();
-    reader.onload = function(e){
-      setCustomBackgroundMedia({ type: 'video', src: String(e.target.result || ''), name: file.name || '', mime: file.type || '', size: file.size || 0 });
-    };
-    reader.onerror = function(){ showToast('背景视频读取失败'); };
-    reader.readAsDataURL(file);
-  });
-}
-// 根据文件类型读取自定义背景媒体。
+// 旧文件输入入口保留为兼容壳，实际选择交给宿主文件选择器。
 function readBackgroundMediaFile(file) {
-  if (!file) return;
-  if (/^image\//i.test(file.type || '')) readBackgroundImageFile(file);
-  else if (/^video\//i.test(file.type || '')) readBackgroundVideoFile(file);
-  else showToast('请选择图片或视频文件');
+  void file;
+  selectCustomBackgroundMedia();
 }
 // 将 UI 强调色写入 CSS 变量。
 function applyUiAccentColor() {
@@ -15092,16 +15177,6 @@ function bindFxPanel() {
     shelfAccentPicker.addEventListener('input', function(){ setShelfAccentColor(shelfAccentPicker.value, true); });
     shelfAccentPicker.addEventListener('change', function(){ showToast('歌单架颜色: ' + shelfAccentHex().toUpperCase()); });
   }
-  // 背景媒体文件输入。
-  var bgImageInput = document.getElementById('background-image-input');
-  if (bgImageInput) {
-    bgImageInput.addEventListener('change', function(e){
-      // 用户选择的背景媒体文件。
-      var file = e.target.files && e.target.files[0];
-      if (file) readBackgroundMediaFile(file);
-      e.target.value = '';
-    });
-  }
   ['ui-accent-picker','visual-tint-picker','visual-icon-picker','bg-color-picker','shelf-accent-picker','lyric-color-picker','lyric-highlight-picker','lyric-glow-picker'].forEach(function(id){
     // 给每个颜色输入绑定颜色实验室弹层。
     bindColorLabPicker(document.getElementById(id));
@@ -15372,8 +15447,8 @@ function setAIDepthCloudApi(value) {
   showToast('云端 API 已保存');
 }
 
-// 设置 3D 歌单架模式。
-function setShelfMode(m) {
+// 应用 3D 歌单架运行态模式，不负责持久化。
+function applyShelfModeRuntime(m) {
   // 归一化目标模式。
   m = /^(off|side|stage)$/.test(String(m || '')) ? m : fxDefaults.shelf;
   fx.shelf = m;
@@ -15383,6 +15458,11 @@ function setShelfMode(m) {
   // 底部控制条节点。
   var bottomBar = document.getElementById('bottom-bar');
   if (bottomBar) bottomBar.classList.toggle('stage-mode', m === 'stage');
+  return m;
+}
+// 设置 3D 歌单架模式。
+function setShelfMode(m) {
+  applyShelfModeRuntime(m);
   saveLyricLayout();
 }
 
@@ -15463,7 +15543,7 @@ function syncControlsAutoHideButton() {
 function setParticleLyricsSilently(on) {
   fx.particleLyrics = !!on;
   if (fx.particleLyrics) createLyricsParticles();
-  else clearStageLyrics();
+  else disposeLyricsParticles();
   lyricsVisible = fx.particleLyrics;
 }
 
@@ -17093,13 +17173,147 @@ function startMainLoopSafely() {
 // ============================================================
 //  EchoMusic 插件桥接层
 // ============================================================
+// 应用布尔型可选视觉层运行态，不负责持久化。
+function applyOptionalVisualLayerRuntimeState() {
+  var requestedFloatLayer = !!fx.floatLayer;
+  if (requestedFloatLayer) createFloatLayer();
+  else destroyFloatLayer();
+  if (requestedFloatLayer !== !!fx.floatLayer) {
+    var floatToggle = document.getElementById('t-float');
+    if (floatToggle) floatToggle.classList.toggle('on', fx.floatLayer);
+  }
+  if (fx.particleLyrics) createLyricsParticles();
+  else disposeLyricsParticles();
+  lyricsVisible = !!fx.particleLyrics;
+  if (fx.backCover) createBackCoverLayer();
+  else destroyBackCoverLayer();
+}
+
+// 应用性能相关运行态，不负责持久化。
+function applyPerformanceRuntimeState() {
+  fx.performanceBackground = normalizePerformanceBackgroundMode(fx.performanceBackground, fx.liveBackgroundKeep === true);
+  fx.liveBackgroundKeep = fx.performanceBackground === 'keep';
+  fx.performanceQuality = normalizePerformanceQuality(fx.performanceQuality);
+  updatePerformanceControls();
+  updateRenderPowerClasses();
+  applyRendererPowerMode();
+  if (fx.performanceBackground === 'keep') {
+    recoverVisualsAfterBackground('storage-restore-keep');
+  } else if (fx.performanceBackground === 'release' && isDeepBackgroundMode()) {
+    trimRuntimeCaches('storage-restore-release', true);
+  }
+}
+
+// 应用 AI 深度运行态，不负责持久化。
+function applyAIDepthRuntimeState() {
+  fx.aiDepthMode = normalizeAIDepthMode(fx.aiDepthMode);
+  fx.aiDepthCloudApi = normalizeAIDepthCloudApi(fx.aiDepthCloudApi);
+  updateAIDepthControls();
+  if (!isAIDepthEnabled()) {
+    setCoverDepthState(0, 0, 240);
+    return;
+  }
+  aiDepthFailUntil = 0;
+  queueAIDepthForCurrentCover(true);
+}
+
+// 应用歌单架运行态，不负责持久化。
+function applyShelfRuntimeState() {
+  fx.shelfCameraMode = normalizeShelfCameraMode(fx.shelfCameraMode || fxDefaults.shelfCameraMode);
+  fx.shelfPresence = normalizeShelfPresence(fx.shelfPresence || fxDefaults.shelfPresence);
+  applyShelfModeRuntime(fx.shelf);
+  updateShelfControlUi();
+  if (fx.shelfCameraMode === 'static' && orbit && orbit.focus && /^shelf-/.test(String(orbit.focus.type || ''))) {
+    setFocusZone(null, true);
+  }
+  if (shelfManager && shelfManager.rebuild) shelfManager.rebuild(true);
+  if (shelfManager && shelfManager.refreshTheme) shelfManager.refreshTheme();
+}
+
+// 数据库状态恢复后统一重放所有视觉运行态副作用，不负责持久化。
+function applyFxRuntimeStateAfterStorageLoad() {
+  normalizeDevelopmentLockedFxState();
+  applyShelfCameraDefaultAngle(false);
+  setPreset(fx.preset, { silent: true, preserveCamera: true, skipTransition: true, noSave: true });
+  applyCoverParticleResolution(fx.coverResolution, { reload: true });
+  syncFxUniforms();
+  updateFxInputs();
+  applySavedLyricPaletteState();
+  refreshCurrentLyricStyle();
+  applyControlGlassChromaticOffset();
+  applyWallpaperModeState(true);
+  applyOptionalVisualLayerRuntimeState();
+  applyPerformanceRuntimeState();
+  applyShelfRuntimeState();
+  applyAIDepthRuntimeState();
+}
+
+// 把宿主数据库状态应用到已经启动的播放器运行态。
+function applyHostPersistentState(state) {
+  if (!state || typeof state !== 'object') return;
+  persistedStateSnapshot = state;
+  hostStateLoaded = true;
+  var nextFx = Object.assign({}, fxDefaults, readSavedLyricLayout());
+  fx = nextFx;
+  normalizeDevelopmentLockedFxState();
+  playbackVisualPreset = normalizeVisualPresetIndex(fx.preset, DEFAULT_PLAYBACK_VISUAL_PRESET);
+  targetVolume = readSavedVolume();
+  if (targetVolume > 0.01) lastNonZeroVolume = targetVolume;
+  controlsAutoHide = readBooleanPreference(CONTROLS_AUTO_HIDE_STORE_KEY, false);
+  playlistPanelPinned = readBooleanPreference(PLAYLIST_PANEL_PIN_STORE_KEY, false);
+  try {
+    var nextCamera = readFreeCameraState();
+    if (freeCamera && nextCamera) {
+      freeCamera.locked = nextCamera.locked;
+      freeCamera.active = false;
+      freeCamera.position.copy(nextCamera.position);
+      freeCamera.yaw = nextCamera.yaw;
+      freeCamera.pitch = nextCamera.pitch;
+      freeCamera.roll = nextCamera.roll;
+      freeCamera.fov = nextCamera.fov;
+    }
+  } catch (e) {}
+  try { applyVolumeToAudio(); } catch (e1) {}
+  try { updateVolumeUi(); } catch (e2) {}
+  try { applyPlaylistPanelPinState(playlistPanelPinned, false); } catch (e3) {}
+  try { applyControlsAutoHidePreference(); } catch (e4) {}
+  try { applyFxRuntimeStateAfterStorageLoad(); } catch (e5) {}
+}
+
+// 应用宿主数据库里的用户视觉存档；数据库为空时写入打包默认存档。
+function applyHostUserFxArchives(raw) {
+  var exists = Array.isArray(raw);
+  persistedUserFxArchivesRaw = exists ? raw : [];
+  hostUserFxArchivesLoaded = true;
+  userFxArchives = readUserFxArchives();
+  if (!exists || !userFxArchives.length) {
+    userFxArchives = [createPackagedDefaultUserFxArchiveSlot()];
+    saveUserFxArchives();
+  }
+  try { renderUserFxArchives(); } catch (e) {}
+}
+
+// 初始化宿主数据库数据。
+async function loadHostPersistentStorage() {
+  try {
+    var values = await Promise.all([
+      hostStorageGet(EPF_STATE_STORE_KEY),
+      hostStorageGet(USER_FX_ARCHIVE_STORE_KEY)
+    ]);
+    applyHostPersistentState(values[0] && typeof values[0] === 'object' ? values[0] : {});
+    applyHostUserFxArchives(values[1]);
+  } catch (e) {
+    console.warn('[存储] 初始化读取失败', e);
+  }
+}
+
 (function initEchoMusicPluginBridge() {
   // 桥接层运行在 iframe 子页面内：接收父页面推送的快照、歌词、进度和频谱，并把用户操作回传给宿主。
   // 原播放器的大部分 UI 和视觉逻辑继续复用，但真实播放、队列修改和窗口控制都交给 EchoMusic 宿主执行。
   // 宿主消息 source 标识。
-  var BRIDGE_PARENT_SOURCE = 'echo-player-frontend-parent';
+  var BRIDGE_PARENT_SOURCE = ECHO_BRIDGE_PARENT_SOURCE;
   // 子页面消息 source 标识。
-  var BRIDGE_CHILD_SOURCE = 'echo-player-frontend-child';
+  var BRIDGE_CHILD_SOURCE = ECHO_BRIDGE_CHILD_SOURCE;
   // 最近一次宿主快照。
   var bridgeSnapshot = null;
   // 桥接频谱帧引用。
@@ -17126,12 +17340,7 @@ function startMainLoopSafely() {
   // 向父页面发送桥接协议消息。
   function post(type, extra) {
     // 子页面发给宿主的消息统一带 source，父页面只接受这个来源，避免误处理其他窗口消息。
-    try {
-      parent.postMessage(Object.assign({
-        source: BRIDGE_CHILD_SOURCE,
-        type: type
-      }, extra || {}), '*');
-    } catch (e) {}
+    postParentBridgeMessage(type, extra);
   }
 
   // 发送宿主播放器控制命令。
@@ -17875,13 +18084,21 @@ function startMainLoopSafely() {
         // 滑动期间实时把音量交给宿主。
         e.stopPropagation();
         if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-        command('volume', { value: Number(volume.value || 0) });
+        var next = clamp01(Number(volume.value || 0));
+        targetVolume = next;
+        if (next > 0.01) lastNonZeroVolume = next;
+        saveStatePatch({ volume: next });
+        command('volume', { value: next });
       }, true);
       volume.addEventListener('change', function(e) {
         // change 事件作为 input 的兜底提交。
         e.stopPropagation();
         if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-        command('volume', { value: Number(volume.value || 0) });
+        var next = clamp01(Number(volume.value || 0));
+        targetVolume = next;
+        if (next > 0.01) lastNonZeroVolume = next;
+        saveStatePatch({ volume: next });
+        command('volume', { value: next });
       }, true);
     }
 
@@ -17892,6 +18109,7 @@ function startMainLoopSafely() {
       targetVolume = next;
       if (next > 0.01) lastNonZeroVolume = next;
       if (typeof updateVolumeUi === 'function') updateVolumeUi();
+      saveStatePatch({ volume: next });
       command('volume', { value: next });
     }
 
@@ -17990,6 +18208,7 @@ function startMainLoopSafely() {
       forcePlayerSurface();
       refreshBridgeViewport('echo-bridge-init');
       installWindowControls();
+      loadHostPersistentStorage().catch(function(err){ console.warn('[存储] 初始化失败', err); });
       // 初始化完成后主动索要一次完整快照。
       post('echo-player-frontend:request-snapshot');
     } else if (data.type === 'echo-player-frontend:snapshot') {

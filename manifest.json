@@ -1,7 +1,7 @@
 {
   "id": "player-frontend",
   "name": "3D歌词",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "description": "仿Mineradio歌词页",
   "author": "xiaotian2333",
   "path": "",
@@ -15,9 +15,10 @@
   ],
   "capabilities": {
     "localFiles": true,
-    "audioSpectrum": true
+    "audioSpectrum": true,
+    "sqlite": true
   },
   "requires": {
-    "echoMusicVersion": ">=2.2.7-beta.28"
+    "echoMusicVersion": ">=2.2.8-beta.4"
   }
 }
