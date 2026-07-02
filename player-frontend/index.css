@@ -131,7 +131,7 @@ body.echo-plugin-bridge #fx-fab {
 body.echo-plugin-bridge #fx-panel {
   display: block!important;
 }
-body.echo-plugin-bridge #playlist-panel, body.echo-plugin-bridge #fx-panel {
+body.echo-plugin-bridge #fx-panel {
   z-index: 35;
 }
 #desktop-window-shell {
@@ -1181,12 +1181,11 @@ body.immersive-mode #bottom-bar {
 body.immersive-mode #mini-queue-popover {
   display: none!important;
 }
-/* 沉浸模式下隐藏视觉控制台、顶部桥接按钮和左侧播放列表面板。 */
+/* 沉浸模式下隐藏视觉控制台和顶部桥接按钮。 */
 body.immersive-mode #fx-fab,
 body.immersive-mode #fx-panel,
 body.immersive-mode #echo-bridge-close,
-body.immersive-mode #echo-bridge-window-controls,
-body.immersive-mode #playlist-panel {
+body.immersive-mode #echo-bridge-window-controls {
   opacity: 0!important;
   visibility: hidden!important;
   pointer-events: none!important;
@@ -2679,425 +2678,7 @@ body.controls-visible #fx-fab {
 .fx-fold, .fx-advanced {
   background: rgba(255,255,255,.024);
 }
-/* ===== css/06-playlist-panel.css ===== */
-/* ============================================================ */
-/*  播放队列面板                                                 */
-/* ============================================================ */
-#playlist-panel {
-  position: fixed;
-  z-index: 17;
-  top: 78px;
-  left: -410px;
-  width: 340px;
-  max-height: calc(100vh - 120px);
-  overflow: auto;
-  background: rgba(12,12,18,0.42);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 20px;
-  padding: 18px;
-  backdrop-filter: blur(40px) saturate(1.4);
-  -webkit-backdrop-filter: blur(40px) saturate(1.4);
-  box-shadow: 0 24px 80px rgba(0,0,0,0.45);
-  opacity: 0;
-  transition: left .55s cubic-bezier(.16,1,.3,1),opacity .45s cubic-bezier(.16,1,.3,1),transform .55s cubic-bezier(.16,1,.3,1);
-  pointer-events: none;
-  transform: translateX(-16px);
-  overscroll-behavior: contain;
-}
-#playlist-panel.show, #playlist-panel.peek {
-  left: 32px;
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateX(0);
-}
-#playlist-panel.pinned {
-  border-color: rgba(var(--fc-accent-rgb),.28);
-  box-shadow: 0 24px 80px rgba(0,0,0,0.45),0 0 34px rgba(var(--fc-accent-rgb),.08);
-}
-#playlist-panel::-webkit-scrollbar {
-  width: 3px;
-}
-#playlist-panel::-webkit-scrollbar-thumb {
-  background: rgba(var(--fc-accent-rgb),.20);
-  border-radius: 3px;
-}
-.queue-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 14px;
-}
-.queue-head-act {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.playlist-pin-btn {
-  width: 30px;
-  min-width: 30px;
-  flex: 0 0 auto;
-  padding: 0;
-}
-.playlist-pin-btn.active {
-  border-color: rgba(var(--fc-accent-rgb),.38);
-  background: rgba(var(--fc-accent-rgb),.10);
-  color: #fff;
-}
-.panel-tabs {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.panel-tab {
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.1);
-  background: rgba(255,255,255,.03);
-  color: rgba(255,255,255,.55);
-  cursor: pointer;
-  font-size: 11px;
-  transition: all .2s;
-  font-family: inherit;
-}
-.panel-tab.active {
-  background: rgba(0,245,212,.10);
-  border-color: rgba(0,245,212,.34);
-  color: #eafffb;
-}
-.queue-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 6px;
-}
-.queue-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px;
-  border-radius: 10px;
-  background: rgba(255,255,255,.025);
-  border: 1px solid rgba(255,255,255,.04);
-  cursor: pointer;
-  transition: all .2s;
-  will-change: transform,opacity;
-}
-.queue-item:hover {
-  background: rgba(255,255,255,.05);
-}
-.queue-item.now {
-  border-color: rgba(0,245,212,.34);
-  background: rgba(0,245,212,.075);
-}
-.queue-item img {
-  width: 38px;
-  height: 38px;
-  border-radius: 6px;
-  object-fit: cover;
-  background: rgba(255,255,255,.06);
-  flex-shrink: 0;
-}
-.qi-info {
-  flex: 1;
-  min-width: 0;
-}
-.qi-name {
-  font-size: 12px;
-  color: rgba(255,255,255,.9);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.queue-item.now .qi-name {
-  color: #eafffb;
-}
-.qi-sub {
-  font-size: 10.5px;
-  color: rgba(255,255,255,.4);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.qi-act {
-  display: flex;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity .15s;
-}
-.queue-item:hover .qi-act {
-  opacity: 1;
-}
-.qi-act button {
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 5px;
-  background: rgba(255,255,255,.06);
-  color: rgba(255,255,255,.55);
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-}
-.qi-act button:hover {
-  background: rgba(255,255,255,.15);
-  color: #fff;
-}
-.qi-act button.queue-next:hover {
-  background: rgba(0,245,212,.14);
-  color: #eafffb;
-}
-.song-action-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 1px solid rgba(255,255,255,.11);
-  background: rgba(255,255,255,.045);
-  color: rgba(255,255,255,.58);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: all .18s;
-  font-size: 14px;
-  line-height: 1;
-}
-.song-action-btn:hover {
-  background: rgba(0,245,212,.10);
-  border-color: rgba(0,245,212,.32);
-  color: #eafffb;
-  transform: translateY(-1px);
-}
-.queue-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.10);
-  background: rgba(255,255,255,.03);
-  font-size: 10.5px;
-  color: rgba(255,255,255,.65);
-}
-.queue-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 8px 0 4px;
-}
-.queue-toolbar .fx-mini-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  white-space: nowrap;
-  line-height: 1;
-}
-.pl-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px;
-  border-radius: 11px;
-  background: rgba(255,255,255,.025);
-  border: 1px solid rgba(255,255,255,.04);
-  transition: all .2s;
-  cursor: pointer;
-  margin-bottom: 7px;
-  will-change: transform,opacity;
-}
-.pl-card:hover {
-  background: rgba(255,255,255,.06);
-}
-.pl-card img {
-  width: 44px;
-  height: 44px;
-  border-radius: 8px;
-  object-fit: cover;
-  background: rgba(255,255,255,.06);
-  flex-shrink: 0;
-}
-.pl-load-more {
-  width: 100%;
-  height: 30px;
-  margin: 8px 0 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.pl-name {
-  font-size: 12px;
-  color: rgba(255,255,255,.9);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pl-sub {
-  font-size: 10.5px;
-  color: rgba(255,255,255,.42);
-  margin-top: 3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pl-section-label {
-  margin: 14px 2px 7px;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: .18em;
-  text-transform: uppercase;
-  color: rgba(0,245,212,.50);
-}
-.pl-inline-detail {
-  position: relative;
-  margin: -1px 0 14px;
-  padding: 0 0 12px;
-  scroll-margin-top: 16px;
-}
-.pl-detail-sticky {
-  position: sticky;
-  top: -10px;
-  z-index: 4;
-  margin: 0 -2px 10px;
-  padding: 8px 2px 10px;
-  border-radius: 14px;
-  background: linear-gradient(180deg,rgba(14,17,24,.92),rgba(14,17,24,.76) 68%,rgba(14,17,24,0));
-  backdrop-filter: blur(20px) saturate(1.18);
-  -webkit-backdrop-filter: blur(20px) saturate(1.18);
-}
-.pl-detail-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 2px 0 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(255,255,255,.06);
-}
-.pl-detail-sticky .pl-detail-head {
-  margin: 0 0 8px;
-  padding-bottom: 8px;
-}
-.pl-detail-cover {
-  width: 48px;
-  height: 48px;
-  border-radius: 10px;
-  object-fit: cover;
-  background: rgba(255,255,255,.06);
-  flex: 0 0 auto;
-}
-.pl-detail-title {
-  font-size: 13px;
-  font-weight: 780;
-  color: rgba(255,255,255,.94);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pl-detail-sub {
-  font-size: 10.5px;
-  color: rgba(255,255,255,.42);
-  margin-top: 3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pl-detail-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 8px 0 10px;
-}
-.pl-detail-play {
-  height: 30px;
-  min-width: 98px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(var(--fc-accent-rgb),.32);
-  background: rgba(var(--fc-accent-rgb),.10);
-  color: #fff;
-  font: 700 11.5px var(--font-sans);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  cursor: pointer;
-}
-.pl-detail-play svg {
-  width: 13px;
-  height: 13px;
-  fill: currentColor;
-}
-.pl-detail-top-btn {
-  height: 30px;
-  min-width: 82px;
-  flex: 0 0 auto;
-  padding: 0 12px;
-}
-.pl-detail-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  scroll-behavior: smooth;
-}
-.pl-detail-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 7px;
-  border-radius: 10px;
-  background: rgba(255,255,255,.025);
-  border: 1px solid rgba(255,255,255,.04);
-  cursor: pointer;
-}
-.pl-detail-row:hover {
-  background: rgba(255,255,255,.055);
-}
-.pl-detail-count {
-  margin-left: auto;
-  color: rgba(255,255,255,.38);
-  font-size: 10.5px;
-  white-space: nowrap;
-}
-.pl-detail-progress {
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(255,255,255,.34);
-  font-size: 10.5px;
-}
-.pl-detail-load-more {
-  width: 100%;
-  height: 42px;
-  margin: 10px 0 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 760;
-}
-.pl-detail-row img {
-  width: 34px;
-  height: 34px;
-  border-radius: 7px;
-  object-fit: cover;
-  background: rgba(255,255,255,.06);
-  flex: 0 0 auto;
-}
-.pl-detail-row-title {
-  font-size: 11.5px;
-  font-weight: 650;
-  color: rgba(255,255,255,.86);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pl-card.expanded {
-  border-color: rgba(var(--fc-accent-rgb),.32);
-  background: rgba(var(--fc-accent-rgb),.060);
-}
-.panel-tab.active, .queue-item.now, .mini-queue-item.now, .preset-card.active, .fx-toggle.on, .fx-seg button.active {
+.mini-queue-item.now, .preset-card.active, .fx-toggle.on, .fx-seg button.active {
   border-color: rgba(var(--fc-accent-rgb),.34)!important;
   background: rgba(var(--fc-accent-rgb),.085)!important;
   color: #fff!important;
@@ -3112,21 +2693,21 @@ body.controls-visible #fx-fab {
 #fx-panel {
   scrollbar-color: rgba(var(--fc-accent-rgb),.30) transparent!important;
 }
-.preset-card.active .pc-icon, .fx-section-label, .fx-fold-head .arrow, .pl-section-label {
+.preset-card.active .pc-icon, .fx-section-label, .fx-fold-head .arrow {
   color: rgba(var(--fc-accent-rgb),.72)!important;
 }
 .lyric-color-row:focus-within, .fx-slider:focus-within, .fx-fold.open {
   border-color: rgba(var(--fc-accent-rgb),.18);
 }
-.song-action-btn:hover, .qi-act button.queue-next:hover, .mini-queue-remove.mini-queue-next:hover {
+.mini-queue-remove.mini-queue-next:hover {
   background: rgba(var(--fc-accent-rgb),.12)!important;
   border-color: rgba(var(--fc-accent-rgb),.30)!important;
   color: #fff!important;
 }
-.pl-section-label, .fx-section-label, .fx-fold-head .arrow {
+.fx-section-label, .fx-fold-head .arrow {
   color: rgba(var(--fc-accent-rgb),.58);
 }
-.fx-mini-btn.active, .fx-mini-btn.ghost.active, .playlist-pin-btn.active {
+.fx-mini-btn.active, .fx-mini-btn.ghost.active {
   border-color: rgba(var(--fc-accent-rgb),.38)!important;
   background: rgba(var(--fc-accent-rgb),.12)!important;
   color: #fff!important;
@@ -3157,170 +2738,41 @@ body.controls-visible #fx-fab {
   color: #fff;
 }
 /* Unified saved glass: keep panels in the same texture as the player bar. */
-#fx-panel, #playlist-panel, #toast, #ai-depth-chip, #beat-chip, .modal, .cover-color-pop, .color-lab-pop, .volume-popover, .mini-queue-popover, .pl-inline-detail, .local-beat-track {
+#fx-panel, #toast, #ai-depth-chip, #beat-chip, .modal, .cover-color-pop, .color-lab-pop, .volume-popover, .mini-queue-popover, .local-beat-track {
   background: var(--saved-panel-glass-bg)!important;
   border-color: transparent!important;
   box-shadow: var(--saved-panel-glass-shadow)!important;
   backdrop-filter: var(--saved-panel-glass-filter)!important;
   -webkit-backdrop-filter: var(--saved-panel-glass-filter)!important;
 }
-html.control-glass-svg-ok #fx-panel, html.control-glass-svg-ok #playlist-panel, html.control-glass-svg-ok #toast, html.control-glass-svg-ok #ai-depth-chip, html.control-glass-svg-ok #beat-chip, html.control-glass-svg-ok .modal, html.control-glass-svg-ok .cover-color-pop, html.control-glass-svg-ok .color-lab-pop, html.control-glass-svg-ok .volume-popover, html.control-glass-svg-ok .mini-queue-popover, html.control-glass-svg-ok .pl-inline-detail, html.control-glass-svg-ok .local-beat-track {
+html.control-glass-svg-ok #fx-panel, html.control-glass-svg-ok #toast, html.control-glass-svg-ok #ai-depth-chip, html.control-glass-svg-ok #beat-chip, html.control-glass-svg-ok .modal, html.control-glass-svg-ok .cover-color-pop, html.control-glass-svg-ok .color-lab-pop, html.control-glass-svg-ok .volume-popover, html.control-glass-svg-ok .mini-queue-popover, html.control-glass-svg-ok .local-beat-track {
   backdrop-filter: var(--saved-panel-glass-svg-filter)!important;
   -webkit-backdrop-filter: var(--saved-panel-glass-svg-filter)!important;
 }
-.icon-btn, #fx-fab, .fx-mini-btn, .fx-toggle, .fx-seg button, .panel-tab, .preset-card, .lyric-color-row, .fx-slider, .fx-fold, .modal-btn, .pl-card, .queue-item, .mini-queue-item, .pl-detail-row, .pl-detail-play, .local-beat-tab, .song-action-btn, .qi-act button, .mini-queue-remove {
+.icon-btn, #fx-fab, .fx-mini-btn, .fx-toggle, .fx-seg button, .preset-card, .lyric-color-row, .fx-slider, .fx-fold, .modal-btn, .mini-queue-item, .local-beat-tab, .mini-queue-remove {
   background: var(--saved-button-glass-bg)!important;
   border-color: transparent!important;
   box-shadow: var(--saved-button-glass-shadow)!important;
   backdrop-filter: var(--saved-button-glass-filter)!important;
   -webkit-backdrop-filter: var(--saved-button-glass-filter)!important;
 }
-html.control-glass-svg-ok .icon-btn, html.control-glass-svg-ok #fx-fab, html.control-glass-svg-ok .fx-mini-btn, html.control-glass-svg-ok .fx-toggle, html.control-glass-svg-ok .fx-seg button, html.control-glass-svg-ok .panel-tab, html.control-glass-svg-ok .preset-card, html.control-glass-svg-ok .lyric-color-row, html.control-glass-svg-ok .fx-slider, html.control-glass-svg-ok .fx-fold, html.control-glass-svg-ok .modal-btn, html.control-glass-svg-ok .pl-card, html.control-glass-svg-ok .queue-item, html.control-glass-svg-ok .mini-queue-item, html.control-glass-svg-ok .pl-detail-row, html.control-glass-svg-ok .pl-detail-play, html.control-glass-svg-ok .local-beat-tab, html.control-glass-svg-ok .song-action-btn, html.control-glass-svg-ok .qi-act button, html.control-glass-svg-ok .mini-queue-remove {
+html.control-glass-svg-ok .icon-btn, html.control-glass-svg-ok #fx-fab, html.control-glass-svg-ok .fx-mini-btn, html.control-glass-svg-ok .fx-toggle, html.control-glass-svg-ok .fx-seg button, html.control-glass-svg-ok .preset-card, html.control-glass-svg-ok .lyric-color-row, html.control-glass-svg-ok .fx-slider, html.control-glass-svg-ok .fx-fold, html.control-glass-svg-ok .modal-btn, html.control-glass-svg-ok .mini-queue-item, html.control-glass-svg-ok .local-beat-tab, html.control-glass-svg-ok .mini-queue-remove {
   backdrop-filter: var(--saved-button-glass-svg-filter)!important;
   -webkit-backdrop-filter: var(--saved-button-glass-svg-filter)!important;
 }
-.icon-btn:hover, #fx-fab:hover, #fx-fab.active, .fx-mini-btn:hover, .fx-mini-btn.active, .fx-toggle.on, .fx-seg button.active, .panel-tab.active, .preset-card.active, .modal-btn:hover, .pl-card:hover, .pl-card.expanded, .queue-item:hover, .queue-item.now, .mini-queue-item:hover, .mini-queue-item.now, .pl-detail-row:hover, .pl-detail-play:hover, .local-beat-tab:hover, .local-beat-tab.active, .song-action-btn:hover, .qi-act button:hover, .mini-queue-remove:hover {
+.icon-btn:hover, #fx-fab:hover, #fx-fab.active, .fx-mini-btn:hover, .fx-mini-btn.active, .fx-toggle.on, .fx-seg button.active, .preset-card.active, .modal-btn:hover, .mini-queue-item:hover, .mini-queue-item.now, .local-beat-tab:hover, .local-beat-tab.active, .mini-queue-remove:hover {
   background: var(--saved-button-glass-hover-bg)!important;
   border-color: transparent!important;
   box-shadow: var(--saved-button-glass-hover-shadow)!important;
   color: #fff!important;
 }
-.fx-section-label, .pl-section-label, .preset-card.active .pc-icon, .fx-fold-head .arrow {
+.fx-section-label, .preset-card.active .pc-icon, .fx-fold-head .arrow {
   color: rgba(255,255,255,.68)!important;
   text-shadow: none!important;
 }
 .lyric-color-row:focus-within, .fx-slider:focus-within, .fx-fold.open {
   border-color: transparent!important;
   box-shadow: var(--saved-panel-glass-shadow)!important;
-}
-/* Left playlist panel rollback: keep this page lightweight. */
-#playlist-panel {
-  background: rgba(12,12,18,0.42)!important;
-  border: 1px solid rgba(255,255,255,0.08)!important;
-  box-shadow: 0 24px 80px rgba(0,0,0,0.45)!important;
-  backdrop-filter: blur(40px) saturate(1.4)!important;
-  -webkit-backdrop-filter: blur(40px) saturate(1.4)!important;
-}
-#playlist-panel * {
-  backdrop-filter: none!important;
-  -webkit-backdrop-filter: none!important;
-}
-#playlist-panel.pinned {
-  border-color: rgba(var(--fc-accent-rgb),.28)!important;
-  box-shadow: 0 24px 80px rgba(0,0,0,0.45),0 0 34px rgba(var(--fc-accent-rgb),.08)!important;
-}
-#playlist-panel::-webkit-scrollbar-thumb {
-  background: rgba(var(--fc-accent-rgb),.20)!important;
-}
-#playlist-panel .panel-tab {
-  background: rgba(255,255,255,.03)!important;
-  border: 1px solid rgba(255,255,255,.1)!important;
-  box-shadow: none!important;
-  color: rgba(255,255,255,.55)!important;
-}
-#playlist-panel .panel-tab.active {
-  background: rgba(var(--fc-accent-rgb),.10)!important;
-  border-color: rgba(var(--fc-accent-rgb),.34)!important;
-  color: #fff!important;
-  box-shadow: none!important;
-}
-#playlist-panel .queue-item {
-  background: rgba(255,255,255,.025)!important;
-  border: 1px solid rgba(255,255,255,.04)!important;
-  box-shadow: none!important;
-  color: inherit!important;
-}
-#playlist-panel .queue-item:hover {
-  background: rgba(255,255,255,.05)!important;
-  box-shadow: none!important;
-}
-#playlist-panel .queue-item.now {
-  border-color: rgba(var(--fc-accent-rgb),.34)!important;
-  background: rgba(var(--fc-accent-rgb),.075)!important;
-  box-shadow: none!important;
-}
-#playlist-panel .pl-card {
-  background: rgba(255,255,255,.025)!important;
-  border: 1px solid rgba(255,255,255,.04)!important;
-  box-shadow: none!important;
-  color: inherit!important;
-}
-#playlist-panel .pl-card:hover {
-  background: rgba(255,255,255,.06)!important;
-  box-shadow: none!important;
-}
-#playlist-panel .pl-card.expanded {
-  border-color: rgba(var(--fc-accent-rgb),.32)!important;
-  background: rgba(var(--fc-accent-rgb),.060)!important;
-  box-shadow: none!important;
-}
-#playlist-panel .pl-section-label {
-  color: rgba(0,245,212,.50)!important;
-  text-shadow: none!important;
-}
-#playlist-panel .pl-detail-head {
-  border-bottom: 1px solid rgba(255,255,255,.06)!important;
-}
-#playlist-panel .pl-detail-play {
-  background: rgba(var(--fc-accent-rgb),.10)!important;
-  border: 1px solid rgba(var(--fc-accent-rgb),.32)!important;
-  box-shadow: none!important;
-  color: #fff!important;
-}
-#playlist-panel .pl-detail-row {
-  background: rgba(255,255,255,.025)!important;
-  border: 1px solid rgba(255,255,255,.04)!important;
-  box-shadow: none!important;
-}
-#playlist-panel .pl-detail-row:hover {
-  background: rgba(255,255,255,.055)!important;
-  box-shadow: none!important;
-}
-#playlist-panel .fx-mini-btn {
-  background: rgba(255,255,255,.04)!important;
-  border: 1px solid rgba(255,255,255,.12)!important;
-  box-shadow: none!important;
-  color: rgba(255,255,255,.78)!important;
-}
-#playlist-panel .fx-mini-btn:hover {
-  background: rgba(255,255,255,.1)!important;
-  color: #fff!important;
-  box-shadow: none!important;
-}
-#playlist-panel .fx-mini-btn.active, #playlist-panel .fx-mini-btn.ghost.active {
-  border-color: rgba(var(--fc-accent-rgb),.38)!important;
-  background: rgba(var(--fc-accent-rgb),.10)!important;
-  color: #fff!important;
-  box-shadow: none!important;
-}
-#playlist-panel .fx-mini-btn.ghost {
-  background: transparent!important;
-}
-#playlist-panel .song-action-btn {
-  background: rgba(255,255,255,.045)!important;
-  border: 1px solid rgba(255,255,255,.11)!important;
-  box-shadow: none!important;
-  color: rgba(255,255,255,.58)!important;
-}
-#playlist-panel .song-action-btn:hover {
-  background: rgba(var(--fc-accent-rgb),.10)!important;
-  border-color: rgba(var(--fc-accent-rgb),.32)!important;
-  color: #fff!important;
-  box-shadow: none!important;
-}
-#playlist-panel .qi-act button {
-  background: rgba(255,255,255,.06)!important;
-  border: 0!important;
-  box-shadow: none!important;
-  color: rgba(255,255,255,.55)!important;
-}
-#playlist-panel .qi-act button:hover {
-  background: rgba(255,255,255,.15)!important;
-  color: #fff!important;
-}
-#playlist-panel .qi-act button.queue-next:hover {
-  background: rgba(var(--fc-accent-rgb),.14)!important;
-  color: #fff!important;
 }
 /* Stable panel glass: do not reuse the player bar SVG displacement on tall panels. */
 :root {
@@ -3329,33 +2781,26 @@ html.control-glass-svg-ok .icon-btn, html.control-glass-svg-ok #fx-fab, html.con
   --panel-glass-shadow: 0 24px 78px rgba(0,0,0,.44),0 0 0 1px rgba(255,255,255,.045),inset 0 1px 0 rgba(255,255,255,.18),inset 0 -18px 42px rgba(0,0,0,.16);
   --panel-button-bg: linear-gradient(145deg,rgba(255,255,255,.075),rgba(var(--fc-accent-rgb),.060) 46%,rgba(0,0,0,.14));
 }
-#fx-panel, #toast, #ai-depth-chip, #beat-chip, .modal, .cover-color-pop, .color-lab-pop, .pl-inline-detail, .local-beat-track {
+#fx-panel, #toast, #ai-depth-chip, #beat-chip, .modal, .cover-color-pop, .color-lab-pop, .local-beat-track {
   background: var(--panel-glass-bg)!important;
   border-color: rgba(255,255,255,.075)!important;
   box-shadow: var(--panel-glass-shadow)!important;
   backdrop-filter: var(--panel-glass-filter)!important;
   -webkit-backdrop-filter: var(--panel-glass-filter)!important;
 }
-html.control-glass-svg-ok #fx-panel, html.control-glass-svg-ok #toast, html.control-glass-svg-ok #ai-depth-chip, html.control-glass-svg-ok #beat-chip, html.control-glass-svg-ok .modal, html.control-glass-svg-ok .cover-color-pop, html.control-glass-svg-ok .color-lab-pop, html.control-glass-svg-ok .pl-inline-detail, html.control-glass-svg-ok .local-beat-track {
+html.control-glass-svg-ok #fx-panel, html.control-glass-svg-ok #toast, html.control-glass-svg-ok #ai-depth-chip, html.control-glass-svg-ok #beat-chip, html.control-glass-svg-ok .modal, html.control-glass-svg-ok .cover-color-pop, html.control-glass-svg-ok .color-lab-pop, html.control-glass-svg-ok .local-beat-track {
   backdrop-filter: var(--panel-glass-filter)!important;
   -webkit-backdrop-filter: var(--panel-glass-filter)!important;
 }
-.icon-btn:not(.ctrl-btn), #fx-fab, .fx-mini-btn, .fx-toggle, .fx-seg button, .panel-tab, .preset-card, .lyric-color-row, .fx-slider, .fx-fold, .modal-btn, .local-beat-tab, .song-action-btn {
+.icon-btn:not(.ctrl-btn), #fx-fab, .fx-mini-btn, .fx-toggle, .fx-seg button, .preset-card, .lyric-color-row, .fx-slider, .fx-fold, .modal-btn, .local-beat-tab {
   background: var(--panel-button-bg)!important;
   border-color: rgba(255,255,255,.070)!important;
   backdrop-filter: blur(16px) saturate(1.18)!important;
   -webkit-backdrop-filter: blur(16px) saturate(1.18)!important;
 }
-html.control-glass-svg-ok .icon-btn:not(.ctrl-btn), html.control-glass-svg-ok #fx-fab, html.control-glass-svg-ok .fx-mini-btn, html.control-glass-svg-ok .fx-toggle, html.control-glass-svg-ok .fx-seg button, html.control-glass-svg-ok .panel-tab, html.control-glass-svg-ok .preset-card, html.control-glass-svg-ok .lyric-color-row, html.control-glass-svg-ok .fx-slider, html.control-glass-svg-ok .fx-fold, html.control-glass-svg-ok .modal-btn, html.control-glass-svg-ok .local-beat-tab, html.control-glass-svg-ok .song-action-btn {
+html.control-glass-svg-ok .icon-btn:not(.ctrl-btn), html.control-glass-svg-ok #fx-fab, html.control-glass-svg-ok .fx-mini-btn, html.control-glass-svg-ok .fx-toggle, html.control-glass-svg-ok .fx-seg button, html.control-glass-svg-ok .preset-card, html.control-glass-svg-ok .lyric-color-row, html.control-glass-svg-ok .fx-slider, html.control-glass-svg-ok .fx-fold, html.control-glass-svg-ok .modal-btn, html.control-glass-svg-ok .local-beat-tab {
   backdrop-filter: blur(16px) saturate(1.18)!important;
   -webkit-backdrop-filter: blur(16px) saturate(1.18)!important;
-}
-html.control-glass-svg-ok #playlist-panel {
-  background: rgba(12,12,18,.42)!important;
-  border-color: rgba(255,255,255,.08)!important;
-  box-shadow: 0 24px 80px rgba(0,0,0,.45)!important;
-  backdrop-filter: blur(40px) saturate(1.4)!important;
-  -webkit-backdrop-filter: blur(40px) saturate(1.4)!important;
 }
 /* 最终玻璃范围: 只保留主界面按钮的 SVG 位移。 */
 #fx-fab {
@@ -3369,47 +2814,33 @@ html.control-glass-svg-ok #fx-fab {
   backdrop-filter: var(--saved-button-glass-svg-filter)!important;
   -webkit-backdrop-filter: var(--saved-button-glass-svg-filter)!important;
 }
-#playlist-panel, #fx-panel {
+#fx-panel {
   background: rgba(0,0,0,.90)!important;
   border: 1px solid rgba(255,255,255,.095)!important;
   box-shadow: 0 22px 70px rgba(0,0,0,.42),inset 0 1px 0 rgba(255,255,255,.10)!important;
   backdrop-filter: blur(22px) saturate(1.16)!important;
   -webkit-backdrop-filter: blur(22px) saturate(1.16)!important;
 }
-html.control-glass-svg-ok #playlist-panel, html.control-glass-svg-ok #fx-panel {
+html.control-glass-svg-ok #fx-panel {
   backdrop-filter: blur(22px) saturate(1.16)!important;
   -webkit-backdrop-filter: blur(22px) saturate(1.16)!important;
 }
-.fx-mini-btn, .fx-toggle, .fx-seg button, .panel-tab, .preset-card, .lyric-color-row, .modal-btn, .pl-card, .queue-item, .mini-queue-item, .pl-detail-row, .pl-detail-play, .local-beat-tab, .song-action-btn, .qi-act button, .mini-queue-remove {
+.fx-mini-btn, .fx-toggle, .fx-seg button, .preset-card, .lyric-color-row, .modal-btn, .mini-queue-item, .local-beat-tab, .mini-queue-remove {
   background: rgba(0,0,0,.72)!important;
   border: 1px solid rgba(255,255,255,.10)!important;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.07)!important;
   backdrop-filter: none!important;
   -webkit-backdrop-filter: none!important;
 }
-html.control-glass-svg-ok .fx-mini-btn, html.control-glass-svg-ok .fx-toggle, html.control-glass-svg-ok .fx-seg button, html.control-glass-svg-ok .panel-tab, html.control-glass-svg-ok .preset-card, html.control-glass-svg-ok .lyric-color-row, html.control-glass-svg-ok .modal-btn, html.control-glass-svg-ok .pl-card, html.control-glass-svg-ok .queue-item, html.control-glass-svg-ok .mini-queue-item, html.control-glass-svg-ok .pl-detail-row, html.control-glass-svg-ok .pl-detail-play, html.control-glass-svg-ok .local-beat-tab, html.control-glass-svg-ok .song-action-btn, html.control-glass-svg-ok .qi-act button, html.control-glass-svg-ok .mini-queue-remove {
+html.control-glass-svg-ok .fx-mini-btn, html.control-glass-svg-ok .fx-toggle, html.control-glass-svg-ok .fx-seg button, html.control-glass-svg-ok .preset-card, html.control-glass-svg-ok .lyric-color-row, html.control-glass-svg-ok .modal-btn, html.control-glass-svg-ok .mini-queue-item, html.control-glass-svg-ok .local-beat-tab, html.control-glass-svg-ok .mini-queue-remove {
   backdrop-filter: none!important;
   -webkit-backdrop-filter: none!important;
 }
-#playlist-panel .pl-section-label, #playlist-panel .pl-card, #playlist-panel .queue-item, #playlist-panel .pl-detail-row {
-  background: rgba(0,0,0,.72)!important;
-  border: 1px solid rgba(255,255,255,.10)!important;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.07)!important;
+html.control-glass-svg-ok .icon-btn, html.control-glass-svg-ok .fx-mini-btn, html.control-glass-svg-ok .fx-toggle, html.control-glass-svg-ok .fx-seg button, html.control-glass-svg-ok .preset-card, html.control-glass-svg-ok .lyric-color-row, html.control-glass-svg-ok .modal-btn, html.control-glass-svg-ok .mini-queue-item, html.control-glass-svg-ok .local-beat-tab, html.control-glass-svg-ok .mini-queue-remove {
   backdrop-filter: none!important;
   -webkit-backdrop-filter: none!important;
 }
-#playlist-panel .pl-card:hover, #playlist-panel .queue-item:hover, #playlist-panel .pl-detail-row:hover {
-  background: rgba(18,18,22,.82)!important;
-}
-#playlist-panel .pl-card.expanded, #playlist-panel .queue-item.now {
-  background: rgba(8,14,24,.86)!important;
-  border-color: rgba(var(--fc-accent-rgb),.28)!important;
-}
-html.control-glass-svg-ok .icon-btn, html.control-glass-svg-ok .fx-mini-btn, html.control-glass-svg-ok .fx-toggle, html.control-glass-svg-ok .fx-seg button, html.control-glass-svg-ok .panel-tab, html.control-glass-svg-ok .preset-card, html.control-glass-svg-ok .lyric-color-row, html.control-glass-svg-ok .modal-btn, html.control-glass-svg-ok .pl-card, html.control-glass-svg-ok .queue-item, html.control-glass-svg-ok .mini-queue-item, html.control-glass-svg-ok .pl-detail-row, html.control-glass-svg-ok .pl-detail-play, html.control-glass-svg-ok .local-beat-tab, html.control-glass-svg-ok .song-action-btn, html.control-glass-svg-ok .qi-act button, html.control-glass-svg-ok .mini-queue-remove {
-  backdrop-filter: none!important;
-  -webkit-backdrop-filter: none!important;
-}
-html.control-glass-svg-ok .modal, html.control-glass-svg-ok .volume-popover, html.control-glass-svg-ok .mini-queue-popover, html.control-glass-svg-ok .pl-inline-detail {
+html.control-glass-svg-ok .modal, html.control-glass-svg-ok .volume-popover, html.control-glass-svg-ok .mini-queue-popover {
   backdrop-filter: blur(22px) saturate(1.16)!important;
   -webkit-backdrop-filter: blur(22px) saturate(1.16)!important;
 }
@@ -3609,7 +3040,7 @@ html.control-glass-svg-ok #fx-fab {
 /*  响应式                                                        */
 /* ============================================================ */
 @media (max-width:720px) {
-  #fx-panel, #playlist-panel {
+  #fx-panel {
     right: 12px;
     left: 12px;
     width: auto;

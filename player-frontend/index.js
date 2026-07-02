@@ -171,8 +171,6 @@ var VISUAL_PRESET_SCHEMA = 'skull-preset-v2';
 var DEFAULT_PLAYBACK_VISUAL_PRESET = 0;
 // 最大可用视觉预设索引，所有外部输入都会被限制到这个范围。
 var MAX_VISUAL_PRESET_INDEX = 6;
-// 播放队列面板固定状态的数据库偏好键名。
-var PLAYLIST_PANEL_PIN_STORE_KEY = 'mineradio-playlist-panel-pinned-v1';
 // 底部控制条自动隐藏偏好的数据库偏好键名。
 var CONTROLS_AUTO_HIDE_STORE_KEY = 'mineradio-controls-auto-hide-v1';
 // 自由相机配置在 state:v1 中的字段名。
@@ -233,22 +231,10 @@ function installStartupLongTaskObserver() {
 }
 // 启动时立即启用长任务观察，失败会被函数内部吞掉。
 installStartupLongTaskObserver();
-// 队列面板当前标签、播放模式和迷你队列面板开关。
-var queueViewTab = 'queue', playMode = 'loop', miniQueueOpen = false;
-// 多个列表渲染序号，用于丢弃异步批量渲染中的旧任务。
-var miniQueueRenderSeq = 0, queueRenderSeq = 0, playlistRenderSeq = 0;
-// 队列面板脏标记，表示数据变化后需要重绘。
-var queuePanelDirty = false;
-// 播放队列面板每批渲染数量，控制一次 DOM 更新规模。
-var PLAYLIST_PANEL_BATCH_SIZE = 28;
-// 当前队列面板允许渲染的上限，会随着懒加载逐步增加。
-var playlistPanelRenderLimit = PLAYLIST_PANEL_BATCH_SIZE;
-// 队列面板滚动懒加载监听是否已绑定。
-var playlistPanelLazyBound = false;
-// 歌单详情首屏渲染条数，避免一次性渲染超长歌单。
-var PLAYLIST_DETAIL_INITIAL_RENDER = 64;
-// 歌单详情后续每批追加渲染条数。
-var PLAYLIST_DETAIL_BATCH_SIZE = 48;
+// 播放模式和迷你队列面板开关。
+var playMode = 'loop', miniQueueOpen = false;
+// 迷你队列渲染序号，用于丢弃异步批量渲染中的旧任务。
+var miniQueueRenderSeq = 0;
 // 平滑滚轮处理器是否已经绑定，防止重复监听。
 var smoothWheelScrollBound = false;
 // 封面处理和 AI 深度估计都是异步的，coverProcessToken 用来丢弃已经过期的图片加载或模型结果。
@@ -718,8 +704,6 @@ var cursorHideTimer = null;
 var CURSOR_HIDE_DELAY = 2500;
 // 视觉控制台是否固定展开。
 var fxPanelPinned = false;
-// 播放队列面板是否固定展开，从本地偏好恢复。
-var playlistPanelPinned = readBooleanPreference(PLAYLIST_PANEL_PIN_STORE_KEY, false);
 // 沉浸模式开关。
 var immersiveMode = false;
 // 进入沉浸模式前需要暂存的界面状态，退出时按这里恢复。
@@ -2655,7 +2639,7 @@ function updateCamera() {
   // target* 是本帧相机要缓动靠近的目标轨道参数。
   var targetTheta, targetPhi, targetRadius, tLookAt;
   if (fa) {
-    // 焦点跟拍优先，例如悬停歌单架或队列面板。
+    // 焦点跟拍优先，例如悬停歌单架。
     targetTheta = orbit.focus.theta;
     targetPhi   = orbit.focus.phi;
     targetRadius = orbit.focus.radius;
@@ -2797,12 +2781,6 @@ function activateFocusZone(type) {
     orbit.focus.phi    = shelfProfile.portrait ? -0.24 : -0.32;
     orbit.focus.radius = shelfProfile.portrait ? 4.8 : 3.8;
     orbit.focus.lookAt.set(0, shelfProfile.portrait ? -1.86 : -1.7, 0.8);
-  } else if (type === 'queue') {
-    // 队列在左侧 HTML 面板, 相机微微左移 + 抬升
-    orbit.focus.theta  = 0.40;
-    orbit.focus.phi    = 0.05;
-    orbit.focus.radius = 5.8;
-    orbit.focus.lookAt.set(-1.2, 0, 0);
   }
 }
 // 请求进入或退出某个焦点区，带延迟避免鼠标路过时频繁切镜头。
@@ -2818,7 +2796,7 @@ function setFocusZone(type, immediate) {
   if (focusHover.exitTimer) { clearTimeout(focusHover.exitTimer); focusHover.exitTimer = null; }
   if (!type) {
     // 立刻退出 focus, 让相机回主姿态 (但插值是平滑的)
-    var exitDelay = orbit.focus.type === 'queue' ? PEEK_HIDE_DELAY : 120;
+    var exitDelay = 120;
     focusHover.exitTimer = setTimeout(function(){
       focusHover.exitTimer = null;
       if (!focusHover.wantType) orbit.focus.active = false;
@@ -3162,7 +3140,7 @@ var particlePointerFrame = { dirty:false, ndcX:0, ndcY:0 };
 // 鼠标按下后移动超过该像素距离视为拖拽，不再触发点击动作。
 var CLICK_THRESHOLD = 6;  // 像素, 拖动 > 6px 视为 drag
 // 这些 UI 区域会阻止画布拖拽和粒子交互。
-var UI_HIT_SELECTOR = '#top-right,#fx-panel,#fx-fab,#playlist-panel,#bottom-bar,#thumb-wrap,.modal-mask,#toast,#ai-depth-chip,#beat-chip';
+var UI_HIT_SELECTOR = '#top-right,#fx-panel,#fx-fab,#bottom-bar,#thumb-wrap,.modal-mask,#toast,#ai-depth-chip,#beat-chip';
 
 // 判断指针是否位于播放器 UI 控件上。
 function isPointerOverUi(e) {
@@ -10472,8 +10450,8 @@ void main(){ vec4 t = texture2D(uDotTex, gl_PointCoord); if (t.a < 0.02) discard
         setShelfPinnedOpen(true, true);
         if (typeof setFocusZone === 'function') setFocusZone('shelf-detail', true);
       } else if (action.kind === 'empty') {
-        // 空卡片打开普通播放列表面板。
-        togglePlaylistPanel(true);
+        // 空卡片打开底部迷你队列。
+        setMiniQueueOpen(true);
       }
     },
     // 二级内容框 open/close
@@ -10499,7 +10477,7 @@ void main(){ vec4 t = texture2D(uDotTex, gl_PointCoord); if (t.a < 0.02) discard
         setShelfPinnedOpen(true, true);
         if (typeof setFocusZone === 'function') setFocusZone('shelf-detail', true);
       }
-      if (action.kind === 'empty') togglePlaylistPanel(true);
+      if (action.kind === 'empty') setMiniQueueOpen(true);
     },
     // 关闭二级内容框。
     closeContent: function() {
@@ -10565,46 +10543,6 @@ function safeShelfCloseContent(reason) {
     return true;
   } catch (e) {
     console.warn('[ShelfCloseContent]', reason || 'unknown', e);
-    return false;
-  }
-}
-// 判断播放队列面板是否处于需要渲染的可见状态。
-function isPlaylistPanelVisibleForRender() {
-  // 播放列表 DOM 面板。
-  var panel = document.getElementById('playlist-panel');
-  // 面板是否通过任一可见类显示。
-  var panelOpen = panel && (panel.classList.contains('show') || panel.classList.contains('peek') || panel.classList.contains('pinned'));
-  return !!(panelOpen || miniQueueOpen);
-}
-// 安全渲染播放队列面板，隐藏时可延迟。
-function safeRenderQueuePanel(reason, opts) {
-  opts = opts || {};
-  if (!isPlaylistPanelVisibleForRender() && opts.deferWhenHidden !== false) {
-    // 面板不可见时只标脏，等下次显示再刷新。
-    queuePanelDirty = true;
-    return true;
-  }
-  try {
-    renderQueuePanel(opts);
-    queuePanelDirty = false;
-    return true;
-  } catch (e) {
-    console.warn('[QueuePanelRender]', reason || 'unknown', e);
-    return false;
-  }
-}
-// 刷新此前因面板隐藏而延迟的队列渲染。
-function flushDeferredQueuePanel(reason) {
-  if (!queuePanelDirty) return;
-  safeRenderQueuePanel(reason || 'flush-deferred-queue', { animate: false, scrollCurrent: miniQueueOpen, deferWhenHidden: false });
-}
-// 安全切换播放列表面板标签。
-function safeSwitchPlaylistTab(tab, reason) {
-  try {
-    switchPlaylistTab(tab);
-    return true;
-  } catch (e) {
-    console.warn('[PlaylistTabSwitch]', reason || tab || 'unknown', e);
     return false;
   }
 }
@@ -12379,13 +12317,10 @@ function playModeIconMarkup(mode) {
 function updatePlayModeButton(animate) {
   // 当前播放模式标签。
   var label = playModeLabel(playMode);
-  // 播放模式文字胶囊。
-  var chip = document.getElementById('play-mode-chip');
   // 播放模式按钮。
   var btn = document.getElementById('play-mode-btn');
   // 播放模式图标容器。
   var icon = document.getElementById('play-mode-icon');
-  if (chip) chip.textContent = label;
   if (btn) {
     // 用 dataset、title 和 aria-label 同步当前模式。
     btn.dataset.mode = playMode;
@@ -12942,94 +12877,10 @@ function bindSmoothQueueScrolling() {
   smoothWheelScrollBound = true;
   [
     'mini-queue-list',
-    'fx-panel',
-    'playlist-panel'
+    'fx-panel'
   ].forEach(function(id){
     bindSmoothWheelScroll(document.getElementById(id));
   });
-}
-// 面板显示后播放列表入场动画，并可滚到当前项。
-function animateVisiblePanelList(listEl, selector, scroller, activeSelector, opts) {
-  if (!listEl) return;
-  opts = opts || {};
-  requestAnimationFrame(function(){
-    animateListItems(listEl, selector, { x: -8, y: 6, stagger: 0.01, duration: 0.20, limit: 16 });
-    // 当前激活项。
-    var active = activeSelector ? listEl.querySelector(activeSelector) : null;
-    if (active && scroller && opts.scrollActive !== false) smoothScrollToItem(scroller, active, { duration: 0.32 });
-  });
-}
-// 切换左侧播放列表面板显示状态。
-function togglePlaylistPanel(force) {
-  // 左侧播放列表面板。
-  var el = document.getElementById('playlist-panel');
-  if (force === false) el.classList.remove('show');
-  else if (force === true) el.classList.add('show');
-  else el.classList.toggle('show');
-  if (el.classList.contains('show')) {
-    // 打开面板时播放轻微入场动画。
-    if (window.gsap) window.gsap.fromTo(el, { x: -12, autoAlpha: 0.92 }, { x: 0, autoAlpha: 1, duration: 0.22, ease: 'power2.out', overwrite: true });
-    scheduleUiWarmTask(function(){
-      // 面板打开后刷新延迟渲染的队列内容。
-      flushDeferredQueuePanel('playlist-panel-open');
-      switchPlaylistTab('queue');
-      animateVisiblePanelList(document.getElementById('queue-list'), '.queue-item', el, '.queue-item.now', { scrollActive: false });
-    }, 180);
-  }
-}
-// 将播放列表面板常开状态应用到 DOM。
-function applyPlaylistPanelPinState(openPanel) {
-  // 左侧播放列表面板。
-  var panel = document.getElementById('playlist-panel');
-  // 常开按钮。
-  var btn = document.getElementById('playlist-pin-btn');
-  if (panel) {
-    panel.classList.toggle('pinned', !!playlistPanelPinned);
-    if (playlistPanelPinned || openPanel) {
-      // 常开或主动打开时保留面板 peek 状态。
-      panel.dataset.preserveTabOnOpen = '1';
-      setPeek(panel, true, 'pl');
-    }
-  }
-  if (btn) {
-    // 同步按钮激活态和提示文案。
-    btn.classList.toggle('active', !!playlistPanelPinned);
-    btn.title = playlistPanelPinned ? '取消常开队列' : '常开队列';
-  }
-}
-// 设置左侧播放列表面板是否常开。
-function setPlaylistPanelPinned(on, silent) {
-  playlistPanelPinned = !!on;
-  saveBooleanPreference(PLAYLIST_PANEL_PIN_STORE_KEY, playlistPanelPinned);
-  applyPlaylistPanelPinState(playlistPanelPinned);
-  if (!silent) showToast(playlistPanelPinned ? '左侧队列已常开' : '左侧队列已恢复自动隐藏');
-}
-// 切换左侧播放列表面板常开状态。
-function togglePlaylistPanelPinned() {
-  setPlaylistPanelPinned(!playlistPanelPinned);
-}
-// 将左侧队列面板滚动到当前播放项。
-function scrollPlaylistPanelToCurrent() {
-  // 左侧面板滚动容器。
-  var panel = document.getElementById('playlist-panel');
-  // 队列列表容器。
-  var list = document.getElementById('queue-list');
-  if (!panel || !list || queueViewTab !== 'queue') return;
-  // 节流，避免频繁切歌或重复打开时持续滚动。
-  var now = performance.now();
-  if (panel.__lastCurrentScrollAt && now - panel.__lastCurrentScrollAt < 650) return;
-  panel.__lastCurrentScrollAt = now;
-  requestAnimationFrame(function(){
-    smoothScrollToItem(panel, list.querySelector('.queue-item.now'), { duration: 0.28, align: 0.34 });
-  });
-}
-// 切换播放列表面板标签；当前只保留队列标签。
-function switchPlaylistTab(tab) {
-  queueViewTab = 'queue';
-  // 队列内容面板。
-  var queuePane = document.getElementById('queue-pane');
-  if (queuePane) queuePane.style.display = '';
-  animateVisiblePanelList(document.getElementById('queue-list'), '.queue-item', document.getElementById('playlist-panel'), '.queue-item.now');
 }
 // 设置底部迷你队列弹层打开状态。
 function setMiniQueueOpen(open) {
@@ -13106,39 +12957,6 @@ document.addEventListener('click', function(e){
 bindSmoothQueueScrolling();
 // 初始化通用弹层背景点击关闭逻辑。
 bindModalBackdropClose();
-// 渲染左侧播放队列面板。
-function renderQueuePanel(opts) {
-  opts = opts || {};
-  // 主队列列表节点。
-  var $ql = document.getElementById('queue-list');
-  // 渲染序号，用于避免旧动画调度作用到新内容。
-  var seq = ++queueRenderSeq;
-  if (!playQueue.length) {
-    // 空队列占位。
-    $ql.innerHTML = '<div style="text-align:center;padding:24px 0;color:rgba(255,255,255,.32);font-size:11.5px">队列为空</div>';
-    renderMiniQueuePanel();
-    return;
-  }
-  // 生成主队列 HTML。
-  $ql.innerHTML = playQueue.map(function(song, i){
-    // 当前歌曲缩略封面。
-    var thumb = songCoverSrc(song, 60);
-    // 封面图片或占位块。
-    var imgTag = thumb ? '<img src="' + thumb + '" alt="" loading="lazy" decoding="async" onerror="this.style.opacity=0.2">' : '<div style="width:38px;height:38px;border-radius:6px;background:rgba(255,255,255,.06);flex-shrink:0"></div>';
-    return '<div class="queue-item' + (i === currentIdx ? ' now' : '') + '" onclick="playQueueAt(' + i + ')">' +
-      imgTag +
-      '<div class="qi-info"><div class="qi-name">' + escHtml(song.name) + '</div><div class="qi-sub">' + escHtml(song.artist || '未知歌手') + '</div></div>' +
-      '<div class="qi-act">' +
-        '<button class="queue-next" onclick="event.stopPropagation();requestHostPlayNextIndex(' + i + ')" title="下一首播放">下</button>' +
-        '<button onclick="event.stopPropagation();removeFromQueue(' + i + ')" title="移除">×</button>' +
-      '</div>' +
-    '</div>';
-  }).join('');
-  // 只允许最新一次渲染调度播放入场动画。
-  if (opts.animate && seq === queueRenderSeq) animateVisiblePanelList($ql, '.queue-item', document.getElementById('playlist-panel'), '.queue-item.now');
-  // 主队列变化时同步刷新迷你队列。
-  renderMiniQueuePanel({ scrollCurrent: miniQueueOpen });
-}
 // 进度条
 // 归一化歌曲时长，兼容毫秒和秒两种单位。
 function normalizePlaybackDurationSeconds(value) {
@@ -15659,10 +15477,9 @@ function setImmersiveMode(on) {
     var bottomBarEnter = document.getElementById('bottom-bar');
     if (bottomBarEnter) bottomBarEnter.classList.remove('visible', 'soft-hidden');
     closeImmersiveInterference();
-    // 沉浸模式下收起 3D 歌单架与左侧队列，退出时由保存状态恢复。
+    // 沉浸模式下收起 3D 歌单架，退出时由保存状态恢复。
     setShelfPinnedOpen(false, true);
     applyShelfModeRuntime('off');
-    togglePlaylistPanel(false);
     if (!fx.particleLyrics) setParticleLyricsSilently(true);
     controlsAutoHide = true;
     syncControlsAutoHideButton();
@@ -16566,7 +16383,6 @@ document.addEventListener('keydown', function(e){
     }
     if (miniQueueOpen) { closeMiniQueue(); return; }
     if (shelfManager && shelfManager.hasOpenContent()) { safeShelfCloseContent('escape-key'); return; }
-    togglePlaylistPanel(false);
   }
   else if (e.code === 'KeyL') { if (!immersiveMode) toggleLyricsPanel(); }
   else if (e.code === 'KeyI') toggleImmersiveMode();
@@ -16575,40 +16391,18 @@ document.addEventListener('keydown', function(e){
 
 // ============================================================
 //  UI 半隐藏 v8 — 面板触发/隐藏体验统一
-//   - 控制台 (右侧): x > w-48 进入, x < w-380 离开
-//   - 队列 (左侧): x < 48 进入, x > 380 离开
-//   - 进入立即显示, 离开延迟 500ms (统一)
 // ============================================================
 // 半隐藏面板离开后的隐藏延迟。
 var PEEK_HIDE_DELAY = 170;
-// 控制台和队列面板的 peek 隐藏定时器。
-var peekTimers = { fx:null, pl:null };
+// 控制台 peek 隐藏定时器。
+var peekTimers = { fx:null };
 // 设置面板 peek 半展开状态。
 function setPeek(el, on, key) {
   if (!el) return;
-  if (!on && key === 'pl' && playlistPanelPinned) return;
   if (on) {
-    // 进入前是否已经是 peek 状态。
-    var wasPeek = el.classList.contains('peek');
     if (peekTimers[key]) { clearTimeout(peekTimers[key]); peekTimers[key] = null; }
     if (key === 'fx') el.classList.remove('closing');
-    if (key === 'pl' && !wasPeek && !playQueue.length && queueViewTab === 'queue') switchPlaylistTab('playlists');
-    if (key === 'pl' && !wasPeek && playQueue.length && currentIdx >= 0) {
-      // 左侧队列打开时优先切回队列并滚到当前歌曲。
-      if (el.dataset && el.dataset.preserveTabOnOpen === '1') delete el.dataset.preserveTabOnOpen;
-      else if (queueViewTab !== 'queue') switchPlaylistTab('queue');
-      scrollPlaylistPanelToCurrent();
-    } else if (key === 'pl' && el.dataset && el.dataset.preserveTabOnOpen === '1') {
-      delete el.dataset.preserveTabOnOpen;
-    }
     el.classList.add('peek');
-    if (key === 'pl' && !wasPeek) {
-      // 队列首次 peek 时刷新延迟渲染内容。
-      scheduleUiWarmTask(function(){
-        flushDeferredQueuePanel('playlist-panel-peek');
-        if (queueViewTab === 'queue') animateVisiblePanelList(document.getElementById('queue-list'), '.queue-item', el, '.queue-item.now', { scrollActive: false });
-      }, 180);
-    }
     if (key === 'fx') {
       // 控制台 peek 时同步悬浮按钮。
       var fabOn = document.getElementById('fx-fab');
@@ -16627,145 +16421,31 @@ function setPeek(el, on, key) {
     }, PEEK_HIDE_DELAY);
   }
 }
-// 二级屏左边缘队列触发保护状态。
-var secondaryPlaylistEdgeGuard = { enteredAt:0, timer:null, x:0, y:0, H:0 };
-// 二级屏左边缘安全带最小 X。
-var SECONDARY_PLAYLIST_EDGE_MIN_X = 36;
-// 二级屏左边缘安全带最大 X。
-var SECONDARY_PLAYLIST_EDGE_MAX_X = 96;
-// 二级屏左边缘停留触发时长。
-var SECONDARY_PLAYLIST_EDGE_DWELL_MS = 220;
-// 二级屏拼接缝关闭阈值。
-var SECONDARY_PLAYLIST_SEAM_CLOSE_X = 28;
-// 判断二级左屏拼接缝保护是否启用；当前关闭。
-function isSecondaryLeftDisplaySeamGuardActive() {
-  return false;
-}
-// 重置二级屏边缘触发保护状态。
-function resetSecondaryPlaylistEdgeGuard() {
-  if (secondaryPlaylistEdgeGuard.timer) {
-    clearTimeout(secondaryPlaylistEdgeGuard.timer);
-    secondaryPlaylistEdgeGuard.timer = null;
-  }
-  secondaryPlaylistEdgeGuard.enteredAt = 0;
-}
-// 判断指针是否在二级屏左边缘安全带内。
-function isSecondaryPlaylistSafeBandPoint(ex, ey, H) {
-  return ey > 132 && ey < H - 132 && ex >= SECONDARY_PLAYLIST_EDGE_MIN_X && ex < SECONDARY_PLAYLIST_EDGE_MAX_X;
-}
-// 启动二级屏边缘停留计时。
-function armSecondaryPlaylistEdgeDwell() {
-  if (secondaryPlaylistEdgeGuard.timer) return;
-  secondaryPlaylistEdgeGuard.timer = setTimeout(function(){
-    secondaryPlaylistEdgeGuard.timer = null;
-    if (!isSecondaryLeftDisplaySeamGuardActive()) return;
-    if (!isSecondaryPlaylistSafeBandPoint(secondaryPlaylistEdgeGuard.x, secondaryPlaylistEdgeGuard.y, secondaryPlaylistEdgeGuard.H)) return;
-    var panel = document.getElementById('playlist-panel');
-    if (panel) setPeek(panel, true, 'pl');
-  }, SECONDARY_PLAYLIST_EDGE_DWELL_MS);
-}
-// 判断当前位置是否触发左侧播放队列边缘区域。
-function isPlaylistEdgeTrigger(ex, ey, H) {
-  // 垂直安全区域。
-  var inVerticalBand = ey > 132 && ey < H - 132;
-  if (!inVerticalBand) {
-    resetSecondaryPlaylistEdgeGuard();
-    return false;
-  }
-  if (!isSecondaryLeftDisplaySeamGuardActive()) {
-    return ex >= 14 && ex < 78;
-  }
-  // 二级屏保护模式下需要在安全带停留。
-  var inSafeBand = isSecondaryPlaylistSafeBandPoint(ex, ey, H);
-  if (!inSafeBand) {
-    resetSecondaryPlaylistEdgeGuard();
-    return false;
-  }
-  secondaryPlaylistEdgeGuard.x = ex;
-  secondaryPlaylistEdgeGuard.y = ey;
-  secondaryPlaylistEdgeGuard.H = H;
-  // 当前时间。
-  var now = performance.now();
-  if (!secondaryPlaylistEdgeGuard.enteredAt) secondaryPlaylistEdgeGuard.enteredAt = now;
-  armSecondaryPlaylistEdgeDwell();
-  return now - secondaryPlaylistEdgeGuard.enteredAt >= SECONDARY_PLAYLIST_EDGE_DWELL_MS;
-}
-// 左侧队列面板退出判定的额外右侧 padding。
-function playlistPanelExitPadding() {
-  return isSecondaryLeftDisplaySeamGuardActive() ? 34 : 72;
-}
-// 左侧队列面板焦点判定 padding。
-function playlistPanelFocusPadding() {
-  return isSecondaryLeftDisplaySeamGuardActive() ? 28 : 52;
-}
-// 判断指针是否已离开到应关闭队列面板的位置。
-function shouldClosePlaylistPanelFromPointer(ppOn, ex, ppRect) {
-  if (!ppOn) return false;
-  if (isSecondaryLeftDisplaySeamGuardActive() && ex < SECONDARY_PLAYLIST_SEAM_CLOSE_X) return true;
-  return ex > ppRect.right + playlistPanelExitPadding();
-}
-// 判断队列面板焦点是否应保持。
-function isPlaylistPanelFocusActive(inTrigger, inPanel, pp, ex, ppRect) {
-  if (isSecondaryLeftDisplaySeamGuardActive() && ex < SECONDARY_PLAYLIST_SEAM_CLOSE_X) return false;
-  return inTrigger || inPanel || (pp && pp.classList.contains('peek') && ex < ppRect.right + playlistPanelFocusPadding());
-}
-// 全局鼠标移动负责面板 peek、歌单架 hover 和焦点区切换。
+// 全局鼠标移动负责歌单架 hover 和焦点区切换。
 window.addEventListener('mousemove', function(e){
-  // 视觉控制台面板。
-  var fp = document.getElementById('fx-panel');
-  // 播放列表面板。
-  var pp = document.getElementById('playlist-panel');
   // 指针坐标和视口尺寸。
-  var ex = e.clientX, ey = e.clientY, W = innerWidth, H = innerHeight;
+  var ex = e.clientX, ey = e.clientY, H = innerHeight;
   if (immersiveMode) {
     // 沉浸模式下只保留必要面板和焦点交互。
     updateShelfHoverCueFromPointer(e);
     updateShelfCardHoverSelection(e);
     updateControlsAutoHideFromPointer(ex, ey);
-    // 队列面板是否处于 peek。
-    var ppOnImm = pp.classList.contains('peek');
-    // 队列面板矩形。
-    var ppRectImm = pp.getBoundingClientRect();
-    // 沉浸模式不使用左边缘自动触发。
-    var inQueueTriggerImm = false;
-    // 指针是否在队列面板附近。
-    var inQueuePanelImm = ppOnImm && ex >= ppRectImm.left - 18 && ex <= ppRectImm.right + 24 && ey >= ppRectImm.top - 22 && ey <= ppRectImm.bottom + 22;
-    if (inQueuePanelImm) setPeek(pp, true, 'pl');
-    else if (shouldClosePlaylistPanelFromPointer(ppOnImm, ex, ppRectImm)) setPeek(pp, false, 'pl');
     // 歌单架是否可成为焦点。
     var shelfCanFocusImm = !!(shelfManager && shelfManager.canInteract && shelfManager.canInteract());
     // 新焦点区。
     var newFocusImm = null;
-    // 队列焦点状态。
-    var queueFocusImm = isPlaylistPanelFocusActive(inQueueTriggerImm, inQueuePanelImm, pp, ex, ppRectImm);
     // 侧边歌单架 hover 焦点。
     var shelfHoverFocusImm = !!(shelfCanFocusImm && isSideShelfFocusHit(e));
-    if (queueFocusImm) newFocusImm = 'queue';
-    else if (shelfManager && shelfManager.hasOpenContent && shelfManager.hasOpenContent()) newFocusImm = 'shelf-detail';
+    if (shelfManager && shelfManager.hasOpenContent && shelfManager.hasOpenContent()) newFocusImm = 'shelf-detail';
     else if (shelfHoverFocusImm) newFocusImm = 'shelf-side';
     else if (shelfCanFocusImm && shelfManager.getMode() === 'stage' && ey > H * 0.55) newFocusImm = 'shelf-stage';
-    setFocusZone(newFocusImm, newFocusImm === 'queue');
+    setFocusZone(newFocusImm, false);
     return;
   }
   updateShelfHoverCueFromPointer(e);
   updateShelfCardHoverSelection(e);
-  // 视觉控制台只由右下角按钮展开，由标题栏关闭按钮关闭。
-  // 播放队列 DOM 面板不再由左侧边缘自动弹出，仅保留已打开后的悬停保持
-  // 队列面板是否处于 peek。
-  var ppOn = pp.classList.contains('peek');
-  // 队列面板矩形。
-  var ppRect = pp.getBoundingClientRect();
-  // 普通模式也不再使用左边缘自动触发。
-  var inQueueTrigger = false;
-  // 指针是否在队列面板附近。
-  var inQueuePanel = ppOn && ex >= ppRect.left - 18 && ex <= ppRect.right + 24 && ey >= ppRect.top - 22 && ey <= ppRect.bottom + 22;
-  if (inQueuePanel) setPeek(pp, true, 'pl');
-  else if (shouldClosePlaylistPanelFromPointer(ppOn, ex, ppRect)) setPeek(pp, false, 'pl');
 
-  // v8: 镜头跟拍触发判断
-  //   - 队列面板 peek 时 → queue focus
-  //   - 3D shelf side 模式只在点击展开后 → shelf-side
-  //   - 3D shelf stage 模式 + 鼠标在下 35% → shelf-stage
+  // 歌单架镜头跟拍触发判断。
   // 歌单架是否可成为焦点。
   var shelfCanFocus = !!(shelfManager && shelfManager.canInteract && shelfManager.canInteract());
   if (!shelfCanFocus && !(shelfManager && shelfManager.hasOpenContent && shelfManager.hasOpenContent())) {
@@ -16774,20 +16454,16 @@ window.addEventListener('mousemove', function(e){
 
   // 新焦点区。
   var newFocus = null;
-  // 队列焦点是否活跃。
-  var queueFocusActive = isPlaylistPanelFocusActive(inQueueTrigger, inQueuePanel, pp, ex, ppRect);
   // 侧边歌单架 hover 焦点是否活跃。
   var shelfHoverFocus = !!(shelfCanFocus && isSideShelfFocusHit(e));
-  if (queueFocusActive) {
-    newFocus = 'queue';
-  } else if (shelfManager && shelfManager.hasOpenContent && shelfManager.hasOpenContent()) {
+  if (shelfManager && shelfManager.hasOpenContent && shelfManager.hasOpenContent()) {
     newFocus = 'shelf-detail';
   } else if (shelfHoverFocus) {
     newFocus = 'shelf-side';
   } else if (shelfCanFocus && shelfManager.getMode() === 'stage' && ey > H * 0.55) {
     newFocus = 'shelf-stage';
   }
-  setFocusZone(newFocus, newFocus === 'queue');
+  setFocusZone(newFocus, false);
 });
 
 // 推送壁纸状态到宿主；当前桥接实现为空。
@@ -16831,16 +16507,14 @@ applyControlsAutoHidePreference();
 applyWallpaperModeState(false);
 // 初始化歌单架模式。
 setShelfMode(fx.shelf);
-// 初始化左侧队列常开状态。
-applyPlaylistPanelPinState(false);
 // 按保存配置创建可选视觉层。
 if (fx.floatLayer) createFloatLayer();
 if (fx.particleLyrics) createLyricsParticles();
 if (fx.backCover) createBackCoverLayer();
 // 初始化待机引导。
 initIdleGuideCanvas();
-// 启动时渲染播放队列。
-safeRenderQueuePanel('startup');
+// 启动时渲染迷你队列。
+renderMiniQueuePanel();
 
 
 
@@ -17343,7 +17017,6 @@ function applyHostPersistentState(state) {
   targetVolume = readSavedVolume();
   if (targetVolume > 0.01) lastNonZeroVolume = targetVolume;
   controlsAutoHide = readBooleanPreference(CONTROLS_AUTO_HIDE_STORE_KEY, false);
-  playlistPanelPinned = readBooleanPreference(PLAYLIST_PANEL_PIN_STORE_KEY, false);
   try {
     var nextCamera = readFreeCameraState();
     if (freeCamera && nextCamera) {
@@ -17358,9 +17031,8 @@ function applyHostPersistentState(state) {
   } catch (e) {}
   try { applyVolumeToAudio(); } catch (e1) {}
   try { updateVolumeUi(); } catch (e2) {}
-  try { applyPlaylistPanelPinState(playlistPanelPinned, false); } catch (e3) {}
-  try { applyControlsAutoHidePreference(); } catch (e4) {}
-  try { applyFxRuntimeStateAfterStorageLoad(); } catch (e5) {}
+  try { applyControlsAutoHidePreference(); } catch (e3) {}
+  try { applyFxRuntimeStateAfterStorageLoad(); } catch (e4) {}
 }
 
 // 应用宿主数据库里的用户视觉存档；数据库为空时写入打包默认存档。
@@ -18019,7 +17691,6 @@ async function loadHostPersistentStorage() {
     }
     // 旧播放器歌单视图沿用同一份队列快照。
     playlist = playQueue.slice();
-    if (typeof renderQueuePanel === 'function') renderQueuePanel({ scrollCurrent: true });
     if (typeof renderMiniQueuePanel === 'function') renderMiniQueuePanel({ scrollCurrent: true });
     if (typeof safeShelfRebuild === 'function') {
       try { safeShelfRebuild('echo-bridge', true); } catch (e) {}
