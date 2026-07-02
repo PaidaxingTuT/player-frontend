@@ -2520,6 +2520,43 @@ body.controls-visible #fx-fab {
   min-width: 0;
   padding: 0 8px;
 }
+.lyric-time-offset-row {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) 34px 68px 34px;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 9px 10px;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.030);
+}
+.lyric-time-offset-row .fx-mini-btn {
+  width: 34px;
+  min-width: 0;
+  height: 30px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+.lyric-time-offset-row .fx-mini-btn:disabled {
+  cursor: not-allowed;
+  opacity: .36;
+}
+.lyric-time-offset-value {
+  min-width: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(0,0,0,.18);
+  color: rgba(255,255,255,.82);
+  font: 800 12px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
 /* --- 高级折叠 --- */
 .fx-advanced {
   margin-top: 16px;

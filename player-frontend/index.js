@@ -485,6 +485,8 @@ var fxDefaults = {
   lyricLineHeight: 1.0,
   // 歌词字重。
   lyricWeight: 900,
+  // 歌词时间矫正，正值让歌词提前显示，负值让歌词延后显示。
+  lyricTimeOffset: 0,
   // 是否启用歌词过滤。
   lyricFilterEnabled: true,
   // 歌词过滤正则。
@@ -511,7 +513,7 @@ var fxDefaults = {
   backgroundImage: '',
   // 新版自定义背景媒体对象，可表示图片或视频。
   backgroundMedia: null,
-  // 壁纸模式开关，当前开发锁会强制关闭。
+  // 壁纸模式不由主程序开关控制，外部壁纸页面会单独启用。
   wallpaperMode: false,
   // 壁纸模式透明度，保留给旧配置兼容。
   wallpaperOpacity: 1,
@@ -602,6 +604,7 @@ var PACKAGED_DEFAULT_FX_SNAPSHOT = Object.freeze({
   lyricLetterSpacing: 0,
   lyricLineHeight: 1,
   lyricWeight: 900,
+  lyricTimeOffset: 0,
   lyricFilterEnabled: true,
   lyricFilterRegex: DEFAULT_LYRIC_FILTER_REGEX,
   visualTintMode: 'auto',
@@ -650,9 +653,23 @@ function packagedDefaultLyricLayoutRaw() {
 }
 // 开发期锁定的视觉字段；锁定字段会在读取存档后被强制归一化。
 var DEVELOPMENT_LOCKED_FX = {
-  // 壁纸模式当前不允许被存档重新开启。
+  // 壁纸模式只允许外部壁纸引擎页面启用，不允许被主程序存档重新开启。
   wallpaperMode: true
 };
+// 壁纸引擎需要添加的本机网页地址。
+var WALLPAPER_ENGINE_URL = 'http://127.0.0.1:17196';
+// 壁纸模式入口只提供外部使用提示，不切换主程序状态。
+function wallpaperModeHintText() {
+  return '请在壁纸引擎中添加 ' + WALLPAPER_ENGINE_URL + ' 即可使用壁纸模式';
+}
+// 显示壁纸模式外部接入提示，并保持开关处于关闭态。
+function showWallpaperModeHint() {
+  normalizeDevelopmentLockedFxState();
+  // 壁纸入口是提示按钮，不能表现为已开启。
+  var toggle = document.getElementById('t-wallpaperMode');
+  if (toggle) toggle.classList.remove('on');
+  showToast(wallpaperModeHintText());
+}
 // 判断某个视觉字段是否被开发锁强制接管。
 function isDevelopmentLockedFx(key) {
   return !!DEVELOPMENT_LOCKED_FX[key];
@@ -663,6 +680,44 @@ function normalizeDevelopmentLockedFxState() {
   if (!fx) return;
   // 壁纸模式在当前桥接播放器中固定关闭。
   fx.wallpaperMode = false;
+}
+// 归一化歌词时间矫正，限制在正负 10 秒并吸附到 0.1 秒。
+function normalizeLyricTimeOffset(value) {
+  var number = Number(value);
+  if (!isFinite(number)) number = 0;
+  return Math.round(clampRange(number, -10, 10) * 10) / 10;
+}
+// 格式化歌词时间矫正显示文本。
+function formatLyricTimeOffset(value) {
+  var offset = normalizeLyricTimeOffset(value);
+  return (offset > 0 ? '+' : '') + offset.toFixed(1) + 's';
+}
+// 返回只用于歌词显示和逐字进度的校正后播放时间。
+function effectiveLyricPlaybackTime() {
+  var base = audio && isFinite(audio.currentTime) ? audio.currentTime : 0;
+  return base + normalizeLyricTimeOffset(fx && fx.lyricTimeOffset);
+}
+// 刷新歌词时间矫正控件。
+function updateLyricTimeOffsetControls() {
+  var offset = normalizeLyricTimeOffset(fx && fx.lyricTimeOffset);
+  var value = document.getElementById('lyric-time-offset-value');
+  var minus = document.getElementById('lyric-time-offset-minus');
+  var plus = document.getElementById('lyric-time-offset-plus');
+  if (value) value.textContent = formatLyricTimeOffset(offset);
+  if (minus) minus.disabled = offset <= -10;
+  if (plus) plus.disabled = offset >= 10;
+}
+// 设置歌词时间矫正。
+function setLyricTimeOffset(value, silent) {
+  if (!fx) return;
+  fx.lyricTimeOffset = normalizeLyricTimeOffset(value);
+  updateLyricTimeOffsetControls();
+  saveLyricLayout();
+  if (!silent) showToast('歌词时间矫正: ' + formatLyricTimeOffset(fx.lyricTimeOffset));
+}
+// 按步进调整歌词时间矫正。
+function adjustLyricTimeOffset(delta) {
+  setLyricTimeOffset(normalizeLyricTimeOffset(fx && fx.lyricTimeOffset) + Number(delta || 0));
 }
 // 从本地布局存档里读取上次使用的视觉预设索引。
 function readSavedPlaybackVisualPreset() {
@@ -5729,6 +5784,7 @@ function readSavedLyricLayout() {
       lyricLetterSpacing: clampRange(Number(raw.lyricLetterSpacing) || 0, -0.04, 0.18),
       lyricLineHeight: clampRange(Number(raw.lyricLineHeight) || 1, 0.86, 1.35),
       lyricWeight: clampRange(Number(raw.lyricWeight) || 900, 500, 900),
+      lyricTimeOffset: normalizeLyricTimeOffset(raw.lyricTimeOffset),
       lyricFilterEnabled: raw.lyricFilterEnabled !== false,
       lyricFilterRegex: normalizeSavedLyricFilterRegex(raw.lyricFilterRegex),
       lyricGlow: raw.lyricGlow !== false,
@@ -5809,6 +5865,7 @@ function saveLyricLayout() {
       lyricLetterSpacing: clampRange(Number(fx.lyricLetterSpacing) || 0, -0.04, 0.18),
       lyricLineHeight: clampRange(Number(fx.lyricLineHeight) || 1, 0.86, 1.35),
       lyricWeight: clampRange(Number(fx.lyricWeight) || 900, 500, 900),
+      lyricTimeOffset: normalizeLyricTimeOffset(fx.lyricTimeOffset),
       lyricFilterEnabled: fx.lyricFilterEnabled !== false,
       lyricFilterRegex: normalizeSavedLyricFilterRegex(fx.lyricFilterRegex),
       lyricGlow: !!fx.lyricGlow,
@@ -7865,9 +7922,9 @@ function tickLyricsParticles() {
     }
     return;
   }
-  // 当前播放时间。
-  var t = audio.currentTime;
-  // 基于本地音频时间搜索当前歌词行（参考 EchoMusic-Lyrics-WinIsland 时间驱动模式）。
+  // 当前歌词显示时间，只影响歌词行和逐字进度，不影响真实播放进度。
+  var t = effectiveLyricPlaybackTime();
+  // 基于校正后的歌词时间搜索当前歌词行（参考 EchoMusic-Lyrics-WinIsland 时间驱动模式）。
   var newIdx = -1;
   for (var i = 0; i < lyricsLines.length; i++) {
     if (lyricsLines[i].t <= t + 0.05) newIdx = i; else break;
@@ -13126,6 +13183,7 @@ function normalizeFxArchiveSnapshot(raw) {
     lyricLetterSpacing: archiveNumber(raw, 'lyricLetterSpacing', fxDefaults.lyricLetterSpacing, -0.04, 0.18),
     lyricLineHeight: archiveNumber(raw, 'lyricLineHeight', fxDefaults.lyricLineHeight, 0.86, 1.35),
     lyricWeight: archiveNumber(raw, 'lyricWeight', fxDefaults.lyricWeight, 500, 900),
+    lyricTimeOffset: normalizeLyricTimeOffset(raw.lyricTimeOffset),
     lyricFilterEnabled: raw.lyricFilterEnabled !== false,
     lyricFilterRegex: normalizeSavedLyricFilterRegex(raw.lyricFilterRegex),
     visualTintMode: raw.visualTintMode === 'custom' ? 'custom' : 'auto',
@@ -14376,13 +14434,19 @@ function setRange(id, value) {
 // 刷新开发中锁定功能的控件状态。
 function updateDevelopmentFxControls() {
   [
-    ['wallpaperMode', 't-wallpaperMode', '开发中，暂不可用']
+    ['wallpaperMode', 't-wallpaperMode', wallpaperModeHintText()]
   ].forEach(function(item){
     // 当前功能是否被开发锁锁定。
     var locked = isDevelopmentLockedFx(item[0]);
     // 对应开关节点。
     var el = document.getElementById(item[1]);
     if (!el) return;
+    if (item[0] === 'wallpaperMode') {
+      el.classList.remove('dev-locked', 'on');
+      el.removeAttribute('aria-disabled');
+      el.title = wallpaperModeHintText();
+      return;
+    }
     el.classList.toggle('dev-locked', locked);
     if (locked) {
       el.classList.remove('on');
@@ -14477,6 +14541,7 @@ function updateFxInputs() {
   setRange('fx-lyricspacing', fx.lyricLetterSpacing);
   setRange('fx-lyriclineheight', fx.lyricLineHeight);
   setRange('fx-lyricweight', fx.lyricWeight);
+  updateLyricTimeOffsetControls();
   setRange('fx-lyricscale', fx.lyricScale);
   setRange('fx-lyricx', fx.lyricOffsetX);
   setRange('fx-lyricy', fx.lyricOffsetY);
@@ -15131,6 +15196,10 @@ function bindFxPanel() {
 }
 // 切换布尔型视觉功能开关。
 function toggleFx(key) {
+  if (key === 'wallpaperMode') {
+    showWallpaperModeHint();
+    return;
+  }
   if (isDevelopmentLockedFx(key)) {
     // 开发锁功能不能开启，恢复合法状态并提示用户。
     normalizeDevelopmentLockedFxState();
@@ -15148,10 +15217,9 @@ function toggleFx(key) {
   var toggle = document.getElementById(toggleId);
   if (toggle) toggle.classList.toggle('on', fx[key]);
   syncFxUniforms();
-  if (key === 'lyricCameraLock' || key === 'lyricGlow' || key === 'lyricGlowBeat' || key === 'lyricGlowParticles' || key === 'bloom' || key === 'edge' || key === 'cinema' || key === 'wallpaperMode' || key === 'liveBackgroundKeep') saveLyricLayout();
+  if (key === 'lyricCameraLock' || key === 'lyricGlow' || key === 'lyricGlowBeat' || key === 'lyricGlowParticles' || key === 'bloom' || key === 'edge' || key === 'cinema' || key === 'liveBackgroundKeep') saveLyricLayout();
   // 浮空粒子层需要同步创建或销毁。
   if (key === 'floatLayer') { if (fx.floatLayer) createFloatLayer(); else destroyFloatLayer(); }
-  if (key === 'wallpaperMode') applyWallpaperModeState(true);
   if (key === 'liveBackgroundKeep') {
     // 旧直播后台保持开关同步到新的后台策略。
     fx.performanceBackground = fx.liveBackgroundKeep ? 'keep' : 'auto';
@@ -15168,7 +15236,6 @@ function toggleFx(key) {
   if (key === 'lyricGlow') showToast(fx.lyricGlow ? '歌词溢光已开启' : '歌词溢光已关闭');
   if (key === 'lyricGlowBeat') showToast(fx.lyricGlowBeat ? '歌词溢光跟随鼓点' : '歌词溢光已脱离鼓点');
   if (key === 'lyricGlowParticles') showToast(fx.lyricGlowParticles ? '歌词光粒已开启' : '歌词光粒已关闭');
-  if (key === 'wallpaperMode') showToast(fx.wallpaperMode ? '壁纸模式已开启' : '壁纸模式已关闭');
   if (key === 'liveBackgroundKeep') showToast(fx.liveBackgroundKeep ? '直播后台保持已开启' : '直播后台保持已关闭');
   if (key === 'lyricCameraLock') showToast(fx.lyricCameraLock ? '歌词已绑定镜头' : '歌词已恢复自由漂浮');
   if (key === 'bloom') showToast(fx.bloom ? '溢光已开启' : '溢光已关闭');
