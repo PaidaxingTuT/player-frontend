@@ -479,7 +479,7 @@ function normalizeWallpaperStaticPath(requestPath) {
   const decoded = safeDecodePath(requestPath).replace(/\\/g, '/')
   let relativePath = decoded.replace(/^\/+/, '')
   if (relativePath === 'wallpaper-bridge.js') {
-    relativePath = 'player-frontend/wallpaper-bridge.js'
+    relativePath = 'player-frontend/vendor/wallpaper-bridge.js'
   }
   if (!relativePath.startsWith('player-frontend/')) return ''
   const parts = relativePath.split('/').filter(Boolean)
@@ -515,7 +515,7 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#010304}
 </head>
 <body>
 <iframe id="epf-wallpaper-frame" title="EchoMusic 壁纸模式" allow="autoplay; fullscreen"></iframe>
-<script src="/player-frontend/wallpaper-bridge.js"></script>
+<script src="/player-frontend/vendor/wallpaper-bridge.js"></script>
 <script>window.EchoPlayerFrontendWallpaperBridge.start('/player-frontend/index.html?wallpaper=1');</script>
 </body>
 </html>`
