@@ -170,7 +170,7 @@ var VISUAL_PRESET_SCHEMA = 'skull-preset-v2';
 // 默认播放视觉预设索引。
 var DEFAULT_PLAYBACK_VISUAL_PRESET = 0;
 // 最大可用视觉预设索引，所有外部输入都会被限制到这个范围。
-var MAX_VISUAL_PRESET_INDEX = 6;
+var MAX_VISUAL_PRESET_INDEX = 7;
 // 底部控制条自动隐藏偏好的数据库偏好键名。
 var CONTROLS_AUTO_HIDE_STORE_KEY = 'mineradio-controls-auto-hide-v1';
 // 自由相机配置在 state:v1 中的字段名。
@@ -440,7 +440,7 @@ var DEFAULT_LYRIC_FILTER_REGEX = '^([^：]*)：.*$|^([^:]*):.*$|^([^翻唱]*)翻
 // 用户可调视觉参数的默认值。fx 会在此基础上叠加本地存档，并在控制台、shader 和布局逻辑之间共享。
 var fxDefaults = {
   // 默认视觉预设索引，启动时会根据存档覆盖。
-  preset: DEFAULT_PLAYBACK_VISUAL_PRESET,            // 0=专辑封面，1=滚筒，2=星球，3=虚空，4=唱片，5=星河，6=安魂
+  preset: DEFAULT_PLAYBACK_VISUAL_PRESET,            // 0=专辑封面，1=滚筒，2=星球，3=虚空，4=唱片，5=星河，6=安魂，7=音域回响
   // 主视觉强度，作为低频、中频、高频映射到 shader 时的总倍率。
   intensity: 0.85,
   // 电影镜头震动幅度，影响节拍镜头和相机动态。
@@ -563,6 +563,34 @@ var fxDefaults = {
   performanceQuality: 'high',
   // 后台是否保持动态背景，不保持时会进入深度省电模式。
   liveBackgroundKeep: false,
+  // === 音域回响 (Sonic Topography) 预设参数 ==========
+  sonicGroundAmplitude: 50,
+  sonicGroundMotionSpeed: 50,
+  sonicGroundDensity: 46,
+  sonicGroundRange: 82,
+  sonicGroundLower: 68,
+  sonicGroundDepth: 62,
+  sonicGroundAutoRotate: 50,
+  sonicGroundColorMode: 'cover',
+  sonicGroundBaseColor: '#05070c',
+  sonicGroundCoolColor: '#0066ff',
+  sonicGroundWarmColor: '#ff3c19',
+  sonicGroundAccentColor: '#33e6ff',
+  sonicGroundGlow: 68,
+  sonicGroundSubBass: 90,
+  sonicGroundBass: 92,
+  sonicGroundLowMid: 50,
+  sonicGroundMid: 50,
+  sonicGroundHighMid: 50,
+  sonicGroundPresence: 50,
+  sonicGroundBrilliance: 50,
+  sonicGroundAir: 48,
+  sonicGroundFloatingEnabled: true,
+  sonicGroundFloatingIntensity: 55,
+  sonicGroundFloatingMinSize: 9,
+  sonicGroundFloatingMaxSize: 26,
+  sonicGroundFloatingSpeed: 77,
+  sonicGroundFloatingCount: 80,
 };
 // 内置用户视觉存档的显示名称。
 var PACKAGED_DEFAULT_USER_FX_ARCHIVE_NAME = '默认测试';
@@ -641,7 +669,35 @@ var PACKAGED_DEFAULT_FX_SNAPSHOT = Object.freeze({
   shelfAngleYManual: false,
   shelfOpacity: 1,
   shelfBgOpacity: 0.9,
-  shelfAccentColor: '#ffffff'
+  shelfAccentColor: '#ffffff',
+  // === 音域回响 (Sonic Topography) 预设参数 ==========
+  sonicGroundAmplitude: 50,
+  sonicGroundMotionSpeed: 50,
+  sonicGroundDensity: 46,
+  sonicGroundRange: 82,
+  sonicGroundLower: 68,
+  sonicGroundDepth: 62,
+  sonicGroundAutoRotate: 50,
+  sonicGroundColorMode: 'cover',
+  sonicGroundBaseColor: '#05070c',
+  sonicGroundCoolColor: '#0066ff',
+  sonicGroundWarmColor: '#ff3c19',
+  sonicGroundAccentColor: '#33e6ff',
+  sonicGroundGlow: 68,
+  sonicGroundSubBass: 90,
+  sonicGroundBass: 92,
+  sonicGroundLowMid: 50,
+  sonicGroundMid: 50,
+  sonicGroundHighMid: 50,
+  sonicGroundPresence: 50,
+  sonicGroundBrilliance: 50,
+  sonicGroundAir: 48,
+  sonicGroundFloatingEnabled: true,
+  sonicGroundFloatingIntensity: 55,
+  sonicGroundFloatingMinSize: 9,
+  sonicGroundFloatingMaxSize: 26,
+  sonicGroundFloatingSpeed: 77,
+  sonicGroundFloatingCount: 80,
 });
 // 返回打包默认快照的浅拷贝，避免调用方直接修改冻结模板。
 function clonePackagedDefaultFxSnapshot() {
@@ -4386,6 +4442,8 @@ function destroyFloatLayer() {
 // ============================================================
 // 骷髅粒子预设在 fx.preset 中的索引。
 var SKULL_PRESET_INDEX = 6;
+var SONIC_TOPGRAPHY_INDEX = 7;
+
 // 骷髅模型的基础 X 轴俯仰角。
 var SKULL_MODEL_BASE_ROTATION_X = -0.26;
 // 骷髅模型的基础 Y 轴朝向角。
@@ -13079,6 +13137,7 @@ var presetMeta = [
   { name: '唱片', desc: '唱片 · 圆形封面' },
   { name: '星河', desc: '壁纸粒子 · 音乐律动' },
   { name: '安魂', desc: '骷髅·YUI7W', descHtml: '骷髅·<span class="pc-yui7w">YUI7W</span>' },
+  { name: '音域回响', desc: 'Sonic Topography · 3D 地形' },
 ];
 // 视觉预设卡片对应的 SVG 图标片段。
 var presetIcons = [
@@ -13089,9 +13148,10 @@ var presetIcons = [
   '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.4"/><path d="M16.5 5.2c2.1.9 3.4 2.4 4 4.5"/><path d="M18.8 3.2l1.5 4.8"/></svg>',
   '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 15c2.2-4.4 4.4-4.4 6.6 0s4.4 4.4 6.6 0S20.6 10.6 23 15"/><path d="M3 9c2.2 2.2 4.4 2.2 6.6 0s4.4-2.2 6.6 0S20.6 11.2 23 9"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/></svg>',
   '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.2h4v6.2h4.2v3.8H14v7.6h-4v-7.6H5.8V9.4H10z"/></svg>',
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M2 12 L22 12 M12 2 L12 22 M6 6 L18 18 M6 18 L18 6" stroke-opacity="0.3"/><circle cx="12" cy="12" r="8" stroke-dasharray="3 3"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>',
 ];
 // 控制台预设卡片展示顺序。
-var presetDisplayOrder = [0, 6, 5, 4, 2, 1, 3];
+var presetDisplayOrder = [0, 6, 5, 4, 2, 1, 3, 7];
 // 歌词颜色预设列表。
 var lyricColorPresets = [
   { name:'雾蓝', color:'#a9b8c8' },
@@ -14368,6 +14428,9 @@ function setPreset(p, opts) {
   fx.preset = p;
   if (changed && prev === SKULL_PRESET_INDEX && p !== SKULL_PRESET_INDEX) clearSkullPresetResidue();
   if (p === SKULL_PRESET_INDEX) loadSkullParticleAsset();
+  if (changed) {
+    if (typeof MineradioSonicTopography !== 'undefined' && MineradioSonicTopography.onPresetChange) MineradioSonicTopography.onPresetChange(prev, p, { fx: fx, scene: scene });
+  }
   uniforms.uPreset.value = p;
   refreshPresetGrid();
   if (changed && !opts.skipTransition) triggerPresetParticleTransition(prev, p);
@@ -14380,8 +14443,10 @@ function setPreset(p, opts) {
     else if (p === 4) { orbit.userRadius = 6.5; orbit.userPhi = 0.04; orbit.userTheta = 0.0; orbit.baselineRadius = 6.5; orbit.baselinePhi = 0.04; }
     else if (p === 5) { orbit.userRadius = 9.4; orbit.userPhi = 0.34; orbit.userTheta = -0.52; orbit.baselineRadius = 9.4; orbit.baselinePhi = 0.34; }
     else if (p === 6) { orbit.userRadius = 7.4; orbit.userPhi = 0.10; orbit.userTheta = 0.18; orbit.baselineRadius = 7.4; orbit.baselinePhi = 0.10; }
+    else if (p === 7) { orbit.userRadius = 8.5; orbit.userPhi = 0.20; orbit.userTheta = 0.0; orbit.baselineRadius = 8.5; orbit.baselinePhi = 0.20; }
+    else if (p === 8) { orbit.userRadius = 8.0; orbit.userPhi = 0.15; orbit.userTheta = 0.0; orbit.baselineRadius = 8.0; orbit.baselinePhi = 0.15; }
     else              { orbit.userRadius = 6.6; orbit.userPhi = 0.08; orbit.userTheta = 0.0; orbit.baselineRadius = 6.6; orbit.baselinePhi = 0.08; }
-    orbit.baselineTheta = p === 5 ? -0.52 : (p === 6 ? 0.18 : 0.0);
+    orbit.baselineTheta = p === 5 ? -0.52 : (p === 6 ? 0.18 : (p === 7 ? 0 : (p === 8 ? 0 : 0.0)));
   }
   if (changed && !opts.silent) showToast('视觉预设: ' + presetMeta[p].name);
   // 是否把本次预设写入播放期默认预设。
@@ -16911,7 +16976,8 @@ function animate() {
   uniforms.uMouseXY.value.set(mouseWorld.x, mouseWorld.y);
   uniforms.uMouseActive.value = mouseActive ? 1 : 0;
   // 骷髅预设默认背景压暗值。
-  var skullBackdropDim = fx && fx.preset === SKULL_PRESET_INDEX ? 0.58 : 1;
+  var sonicActive = fx && fx.preset === SONIC_TOPGRAPHY_INDEX;
+  var skullBackdropDim = fx && fx.preset === SKULL_PRESET_INDEX ? 0.58 : (sonicActive ? 0.55 : 1);
   // 歌单架或骷髅预设要求的粒子压暗目标。
   var shelfDimTarget = shouldDimWallpaperForShelf() ? 0.48 : skullBackdropDim;
   // 粒子压暗缓动速度。
@@ -16938,11 +17004,14 @@ function animate() {
   tickParticleSpin(dt);
   // 骷髅预设是否激活。
   var skullPresetActive = fx && fx.preset === SKULL_PRESET_INDEX;
-  // 骷髅预设接管主粒子层时隐藏普通封面粒子。
-  particles.visible = !skullPresetActive;
-  if (bloomParticles) bloomParticles.visible = !skullPresetActive && fx.bloom && fx.bloomStrength > 0.01;
-  if (floatGroup) floatGroup.visible = !skullPresetActive;
-  if (backCoverGroup) backCoverGroup.visible = !skullPresetActive;
+  // 音域预设是否激活。
+  var sonicPresetActive = fx && fx.preset === SONIC_TOPGRAPHY_INDEX;
+  var hideDefaultParticles = skullPresetActive || sonicPresetActive;
+  // 骷髅/音域预设接管主粒子层时隐藏普通封面粒子。
+  particles.visible = !hideDefaultParticles;
+  if (bloomParticles) bloomParticles.visible = !hideDefaultParticles && fx.bloom && fx.bloomStrength > 0.01;
+  if (floatGroup) floatGroup.visible = !hideDefaultParticles;
+  if (backCoverGroup) backCoverGroup.visible = !hideDefaultParticles;
   // 粒子目标 Y 旋转。
   var targetRotY = orbit.centerLocked ? 0 : (headParallax.active ? headParallax.x * 0.5 : 0) + particleRotation.y;
   // 粒子目标 X 旋转。
@@ -16960,6 +17029,12 @@ function animate() {
     backCoverGroup.rotation.copy(particles.rotation);
   }
   updateSkullParticleLayer(dt);
+  // 音域预设音频帧
+  var sonicAudioFrame = { subBass: bass, bass: bass, lowMid: mid, mid: mid, highMid: treble, presence: treble, brilliance: treble, air: treble, kickEnvelope: beatPulse, energy: audioEnergy, treble: treble, beat: beatPulse };
+  if (typeof MineradioSonicTopography !== 'undefined' && MineradioSonicTopography.update) {
+    safeVisualStep('sonic-topography', function(){ MineradioSonicTopography.update(dt, { fx: fx, scene: scene, audio: sonicAudioFrame }); });
+  }
+
   updateStageLyrics3D(dt);
   syncDesktopOverlayState();
 
