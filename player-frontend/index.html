@@ -338,30 +338,6 @@
 <div id="free-camera-hint"><b>自由镜头</b> R 固定/退出 · WASD 移动 · 鼠标转向 · Shift 加速 · Space/Ctrl 升降 · Q/E 轻微旋转 · 滚轮景深 · K 回正</div>
 <div id="loading-overlay"><div class="spinner"></div></div>
 
-<div id="local-beat-modal" class="modal-mask">
-  <div class="modal local-beat-modal">
-    <h2>本地节奏分析</h2>
-    <div class="local-beat-track">
-      <div id="local-beat-title" class="local-beat-track-title">本地歌曲</div>
-      <div id="local-beat-sub" class="local-beat-track-sub">选择一种电影视角分析方式</div>
-    </div>
-    <div class="local-beat-tabs">
-      <button id="local-beat-tab-mr" class="local-beat-tab active" type="button" onclick="selectLocalBeatMode('mr')">
-        <b>MR 分析</b><span>日常电影视角</span>
-      </button>
-      <button id="local-beat-tab-dj" class="local-beat-tab" type="button" onclick="selectLocalBeatMode('dj')">
-        <b>DJ 分析</b><span>长混音/强节奏</span>
-      </button>
-    </div>
-    <div id="local-beat-desc" class="local-beat-desc"></div>
-    <div id="local-beat-status" class="local-beat-status"></div>
-    <div class="btn-row">
-      <button id="local-beat-later-btn" class="modal-btn" onclick="closeLocalBeatModal()">暂不分析</button>
-      <button id="local-beat-cancel-btn" class="modal-btn" onclick="cancelLocalBeatAnalysis()" style="display:none">取消</button>
-      <button id="local-beat-start-btn" class="modal-btn primary" onclick="startLocalBeatAnalysis()">开始分析</button>
-    </div>
-  </div>
-</div>
 
 <div id="toast"></div>
 
